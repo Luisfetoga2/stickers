@@ -1,4 +1,5 @@
 import { frameTimes } from './animate';
+import type { FrameCallback } from './clip';
 import { ctx2d, newCanvas } from './mask';
 
 /** Anything that gives frames by time: a Clip, or a clip with its background removed. */
@@ -6,6 +7,22 @@ export interface FrameSource {
   width: number;
   height: number;
   frameAt(seconds: number): Promise<CanvasImageSource>;
+  /** Reads many frames in order, faster than frameAt in a loop. */
+  readFrames?(times: number[], onFrame: FrameCallback, signal?: AbortSignal): Promise<void>;
+}
+
+/** Reads frames with readFrames when the source has it, otherwise one at a time. */
+export async function readFrames(
+  source: FrameSource,
+  times: number[],
+  onFrame: FrameCallback,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (source.readFrames) return source.readFrames(times, onFrame, signal);
+  for (let i = 0; i < times.length; i++) {
+    signal?.throwIfAborted();
+    onFrame(await source.frameAt(times[i]), i);
+  }
 }
 
 /** Longest side of the frames the editor processes. Stickers are 512 px, so this leaves a little room to zoom. */
@@ -32,6 +49,8 @@ export function hardenAlpha(data: Uint8ClampedArray, low = EDGE_LOW, high = EDGE
 }
 
 export interface CutoutProgress {
+  /** Reading plays the clip once. Cutting sends each frame to ML Kit. */
+  phase: 'reading' | 'cutting';
   done: number;
   total: number;
   /** Average seconds per frame so far. */
@@ -83,15 +102,35 @@ export class ClipCutout {
     if (!maskCtx) throw new Error('Canvas is not available.');
 
     const frames: ImageBitmap[] = [];
-    const began = performance.now();
+    let sources: ImageBitmap[] = [];
     let modelMsTotal = 0;
     let modelReports = 0;
     try {
+      const pending: Promise<ImageBitmap>[] = [];
+      try {
+        await readFrames(
+          clip,
+          times,
+          (source, i) => {
+            workCtx.clearRect(0, 0, width, height);
+            workCtx.drawImage(source, 0, 0, width, height);
+            pending.push(createImageBitmap(work));
+            onProgress({ phase: 'reading', done: i + 1, total: times.length, secondsPerFrame: 0, modelSecondsPerFrame: null });
+          },
+          signal,
+        );
+      } finally {
+        const settled = await Promise.allSettled(pending);
+        sources = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+      }
+
+      const began = performance.now();
       for (let i = 0; i < times.length; i++) {
         signal?.throwIfAborted();
         workCtx.globalCompositeOperation = 'source-over';
         workCtx.clearRect(0, 0, width, height);
-        workCtx.drawImage(await clip.frameAt(times[i]), 0, 0, width, height);
+        workCtx.drawImage(sources[i], 0, 0);
+        sources[i].close();
         modelCtx.drawImage(work, 0, 0, model.width, model.height);
 
         const { mask, modelMs } = await removeBackground(await toJpeg(model));
@@ -114,6 +153,7 @@ export class ClipCutout {
         frames.push(await createImageBitmap(work));
 
         onProgress({
+          phase: 'cutting',
           done: i + 1,
           total: times.length,
           secondsPerFrame: (performance.now() - began) / 1000 / (i + 1),
@@ -124,6 +164,7 @@ export class ClipCutout {
       for (const f of frames) f.close();
       throw err;
     } finally {
+      for (const b of sources) b.close();
       work.width = 0;
       model.width = 0;
       maskCanvas.width = 0;

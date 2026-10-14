@@ -10,6 +10,11 @@ export interface Clip {
   defaultFps: number;
   /** The exact frame at a time in seconds. Draw it before the next call, because the next call can change it. */
   frameAt(seconds: number): Promise<CanvasImageSource>;
+  /**
+   * Calls onFrame once for each time, in order. onFrame must draw the frame right away.
+   * Much faster than frameAt in a loop, because a video plays through once instead of seeking for every frame.
+   */
+  readFrames(times: number[], onFrame: FrameCallback, signal?: AbortSignal): Promise<void>;
   /** Starts playing from a time. Read the playing frame with current(). */
   play(fromSeconds: number): Promise<void>;
   pause(): void;
@@ -19,6 +24,8 @@ export interface Clip {
   current(): CanvasImageSource;
   dispose(): void;
 }
+
+export type FrameCallback = (frame: CanvasImageSource, index: number) => void;
 
 /** GIF frames are scaled down to this longest side. Stickers are 512 px, so this leaves room to zoom. */
 const GIF_MAX_SIDE = 768;
@@ -74,6 +81,11 @@ export async function openVideo(blob: Blob): Promise<Clip> {
       });
       queue = next.catch(() => undefined);
       return next;
+    },
+    readFrames(times, onFrame, signal) {
+      const run = queue.then(() => readByPlaying(video, times, onFrame, signal));
+      queue = run.catch(() => undefined);
+      return run;
     },
     async play(from) {
       await queue;
@@ -151,6 +163,12 @@ export async function openAnimatedImage(blob: Blob, mime: string): Promise<Clip 
       async frameAt(seconds) {
         return frames[indexAt(seconds)];
       },
+      async readFrames(times, onFrame, signal) {
+        for (let i = 0; i < times.length; i++) {
+          signal?.throwIfAborted();
+          onFrame(frames[indexAt(times[i])], i);
+        }
+      },
       async play(from) {
         playFrom = from;
         playStart = performance.now();
@@ -170,6 +188,97 @@ export async function openAnimatedImage(blob: Blob, mime: string): Promise<Clip 
     };
   } finally {
     decoder.close();
+  }
+}
+
+/**
+ * The index of the first time that the frame shown at mediaTime does not cover yet.
+ * A frame covers the times up to half a source frame after it, so each time gets its nearest frame.
+ */
+export function nextDue(times: number[], next: number, mediaTime: number, frameStep: number): number {
+  while (next < times.length && times[next] <= mediaTime + frameStep / 2) next++;
+  return next;
+}
+
+/** Stops waiting for the next video frame after this long and falls back to seeking. */
+const FRAME_WATCHDOG_MS = 1500;
+
+/** Reading plays the clip faster than real time. Phones decode video in hardware, so they keep up. */
+const READ_SPEED = 2;
+
+/**
+ * Plays the video from the first time and hands over frames as they are shown.
+ * If the browser has no requestVideoFrameCallback, or frames stop arriving, the rest are read by seeking.
+ */
+async function readByPlaying(
+  video: HTMLVideoElement,
+  times: number[],
+  onFrame: FrameCallback,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (times.length === 0) return;
+  video.pause();
+  await seek(video, times[0]);
+  onFrame(video, 0);
+  let next = 1;
+
+  if (next < times.length && 'requestVideoFrameCallback' in video) {
+    next = await new Promise<number>((resolve, reject) => {
+      let index = next;
+      let lastMedia = times[0];
+      let step = 1 / 30;
+      let settled = false;
+      let watchdog = 0;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        video.pause();
+        video.playbackRate = 1;
+        video.removeEventListener('ended', onEnded);
+        resolve(index);
+      };
+      const armWatchdog = () => {
+        clearTimeout(watchdog);
+        watchdog = window.setTimeout(finish, FRAME_WATCHDOG_MS);
+      };
+      const onEnded = () => {
+        // The video ended before the last times. Repeat the last frame.
+        while (index < times.length) onFrame(video, index++);
+        finish();
+      };
+      const onVideoFrame = (_now: number, meta: VideoFrameCallbackMetadata) => {
+        if (settled) return;
+        if (signal?.aborted) {
+          settled = true;
+          clearTimeout(watchdog);
+          video.pause();
+          video.playbackRate = 1;
+          video.removeEventListener('ended', onEnded);
+          reject(signal.reason ?? new DOMException('Cancelled', 'AbortError'));
+          return;
+        }
+        armWatchdog();
+        const media = meta.mediaTime;
+        if (media > lastMedia) step = Math.min(step, media - lastMedia);
+        lastMedia = media;
+        const due = nextDue(times, index, media, step);
+        while (index < due) onFrame(video, index++);
+        if (index >= times.length) finish();
+        else video.requestVideoFrameCallback(onVideoFrame);
+      };
+      video.addEventListener('ended', onEnded);
+      video.requestVideoFrameCallback(onVideoFrame);
+      armWatchdog();
+      video.playbackRate = READ_SPEED;
+      video.play().catch(finish);
+    });
+  }
+
+  for (; next < times.length; next++) {
+    signal?.throwIfAborted();
+    await seek(video, times[next]);
+    onFrame(video, next);
   }
 }
 

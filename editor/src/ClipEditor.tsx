@@ -288,11 +288,13 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             // Per-frame messages would hide the frame count. Only the one-time model download matters.
             if (text.startsWith('Downloading')) setStatus({ kind: 'info', text });
           }),
-        ({ done, total, secondsPerFrame, modelSecondsPerFrame }) =>
+        ({ phase, done, total, secondsPerFrame, modelSecondsPerFrame }) =>
           setStatus({
             kind: 'info',
             text:
-              `AI cutout: frame ${done} of ${total}, ${secondsPerFrame.toFixed(2)} s per frame` +
+              phase === 'reading'
+                ? `Reading frames: ${done} of ${total}…`
+                : `AI cutout: frame ${done} of ${total}, ${secondsPerFrame.toFixed(2)} s per frame` +
               (modelSecondsPerFrame !== null ? ` (ML Kit ${modelSecondsPerFrame.toFixed(2)} s)` : '') +
               `, about ${Math.ceil((total - done) * secondsPerFrame)} s left.`,
           }),
@@ -390,6 +392,12 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
                 matte === 'ai' && cutout
                   ? processFrame(null, cutout.indexAt(t))
                   : processFrame(await clip.frameAt(t), 0),
+              // Green screen keys each frame as the clip plays through.
+              readFrames:
+                matte === 'chroma'
+                  ? (times, onFrame, signal) =>
+                      clip.readFrames(times, (frame, i) => onFrame(processFrame(frame, 0), i), signal)
+                  : undefined,
             };
       const animated = await makeAnimated(
         source,

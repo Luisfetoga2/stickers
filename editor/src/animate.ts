@@ -1,4 +1,4 @@
-import type { FrameSource } from './clipCutout';
+import { readFrames, type FrameSource } from './clipCutout';
 import { TooBigError, kb } from './encode';
 import { SIZE, draw, type Transform } from './transform';
 import { frameDurations, muxAnimatedWebp } from './webp';
@@ -67,13 +67,22 @@ export async function makeAnimated(
       const times = frameTimes(start, end, tryFps);
       const frames: ImageBitmap[] = [];
       try {
-        for (let i = 0; i < times.length; i++) {
-          signal?.throwIfAborted();
-          onProgress(`Reading frame ${i + 1} of ${times.length}…`);
-          const source = await clip.frameAt(times[i]);
-          ctx.clearRect(0, 0, SIZE, SIZE);
-          draw(ctx, source, clip.width, clip.height, transform);
-          frames.push(await createImageBitmap(canvas));
+        // createImageBitmap copies the canvas at once, so the next frame can be drawn before it resolves.
+        const pending: Promise<ImageBitmap>[] = [];
+        try {
+          await readFrames(
+            clip,
+            times,
+            (source, i) => {
+              onProgress(`Reading frame ${i + 1} of ${times.length}…`);
+              ctx.clearRect(0, 0, SIZE, SIZE);
+              draw(ctx, source, clip.width, clip.height, transform);
+              pending.push(createImageBitmap(canvas));
+            },
+            signal,
+          );
+        } finally {
+          for (const r of await Promise.allSettled(pending)) if (r.status === 'fulfilled') frames.push(r.value);
         }
 
         // Encode a few sample frames at each quality to guess the full size.
