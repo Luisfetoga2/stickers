@@ -34,6 +34,8 @@ final class BackgroundRemover {
     private final SubjectSegmenter segmenter;
     private final ModuleInstallClient installer;
     private final Executor worker;
+    /** True after the model was found once, so video frames skip the Play services check. */
+    private volatile boolean modelReady;
 
     BackgroundRemover(Context context, Executor worker) {
         this.worker = worker;
@@ -45,9 +47,14 @@ final class BackgroundRemover {
     }
 
     void remove(Bitmap photo, Callback callback) {
+        if (modelReady) {
+            segment(photo, callback);
+            return;
+        }
         installer.areModulesAvailable(segmenter)
                 .addOnSuccessListener(response -> {
                     if (response.areModulesAvailable()) {
+                        modelReady = true;
                         segment(photo, callback);
                     } else {
                         install(photo, callback);
@@ -69,6 +76,7 @@ final class BackgroundRemover {
                 int state = update.getInstallState();
                 if (state == ModuleInstallStatusUpdate.InstallState.STATE_COMPLETED) {
                     installer.unregisterListener(this);
+                    modelReady = true;
                     segment(photo, callback);
                 } else if (state == ModuleInstallStatusUpdate.InstallState.STATE_FAILED
                         || state == ModuleInstallStatusUpdate.InstallState.STATE_CANCELED) {
@@ -92,6 +100,7 @@ final class BackgroundRemover {
                 .addOnSuccessListener(response -> {
                     if (response.areModulesAlreadyInstalled()) {
                         installer.unregisterListener(listener);
+                        modelReady = true;
                         segment(photo, callback);
                     }
                 })
@@ -102,7 +111,6 @@ final class BackgroundRemover {
     }
 
     private void segment(Bitmap photo, Callback callback) {
-        callback.onProgress("Finding the subject…");
         segmenter.process(InputImage.fromBitmap(photo, 0))
                 .addOnSuccessListener(worker, result -> {
                     FloatBuffer confidence = result.getForegroundConfidenceMask();

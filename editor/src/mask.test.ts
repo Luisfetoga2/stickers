@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alphaBounds } from './cutout';
+import { alphaBounds } from './mask';
 
 /** RGBA data where only the listed pixels are opaque. */
 function pixels(width: number, height: number, opaque: Array<[number, number]>): Uint8ClampedArray {

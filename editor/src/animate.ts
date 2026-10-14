@@ -1,4 +1,4 @@
-import type { Clip } from './clip';
+import type { FrameSource } from './clipCutout';
 import { TooBigError, kb } from './encode';
 import { SIZE, draw, type Transform } from './transform';
 import { frameDurations, muxAnimatedWebp } from './webp';
@@ -47,7 +47,7 @@ export function pickQuality(sampleSizes: Map<number, number>, sampleCount: numbe
 
 /** Renders the trimmed clip into one animated WebP under 500 KB. */
 export async function makeAnimated(
-  clip: Clip,
+  clip: FrameSource,
   transform: Transform,
   start: number,
   end: number,
