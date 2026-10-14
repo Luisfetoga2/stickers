@@ -58,18 +58,19 @@ public class StickerContentProvider extends ContentProvider {
 
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
+        Context context = requireContext();
         List<String> segments = uri.getPathSegments();
         if (segments.size() == 1 && METADATA.equals(segments.get(0))) {
-            return packCursor(StickerStore.packIds());
+            return packCursor(StickerStore.visiblePacks(context));
         }
         if (segments.size() == 2 && METADATA.equals(segments.get(0))) {
-            String packId = segments.get(1);
-            return packCursor(StickerStore.isKnownPack(packId)
-                    ? Collections.singletonList(packId)
-                    : Collections.emptyList());
+            StickerStore.Pack pack = StickerStore.find(context, segments.get(1));
+            return packCursor(pack == null || pack.stickers.isEmpty()
+                    ? Collections.emptyList()
+                    : Collections.singletonList(pack));
         }
         if (segments.size() == 2 && STICKERS.equals(segments.get(0))) {
-            return stickerCursor(segments.get(1));
+            return stickerCursor(StickerStore.stickers(context, segments.get(1)));
         }
         throw new IllegalArgumentException("Unknown URI: " + uri);
     }
@@ -80,12 +81,19 @@ public class StickerContentProvider extends ContentProvider {
         if (segments.size() != 3 || !STICKERS_ASSET.equals(segments.get(0))) {
             throw new FileNotFoundException("Unknown URI: " + uri);
         }
+        Context context = requireContext();
         String packId = segments.get(1);
-        String fileName = segments.get(2);
-        if (!StickerStore.isKnownPack(packId) || fileName.contains("/") || fileName.startsWith(".")) {
+        String entry = segments.get(2);
+        if (StickerStore.find(context, packId) == null) {
+            throw new FileNotFoundException("Unknown pack: " + uri);
+        }
+        String fileName = StickerStore.TRAY_FILE.equals(entry)
+                ? entry
+                : PackPlanner.resolveFile(entry, StickerStore.stickers(context, packId));
+        if (fileName == null) {
             throw new FileNotFoundException("Unknown file: " + uri);
         }
-        File file = new File(StickerStore.packDir(requireContext(), packId), fileName);
+        File file = new File(StickerStore.packDir(context, packId), fileName);
         if (!file.isFile()) {
             throw new FileNotFoundException("Missing file: " + uri);
         }
@@ -114,37 +122,33 @@ public class StickerContentProvider extends ContentProvider {
         }
     }
 
-    private Cursor packCursor(List<String> packIds) {
-        Context context = requireContext();
+    private static Cursor packCursor(List<StickerStore.Pack> packs) {
         MatrixCursor cursor = new MatrixCursor(PACK_COLUMNS);
-        for (String packId : packIds) {
+        for (StickerStore.Pack pack : packs) {
             cursor.addRow(new Object[]{
-                    packId,
-                    StickerStore.packName(packId),
+                    pack.id,
+                    pack.name,
                     "Sticker Bridge",
                     StickerStore.TRAY_FILE,
                     "",
                     "",
                     "",
-                    "https://luisfetoga2.github.io/stickers/",
+                    "https://github.com/Luisfetoga2/stickers",
                     "",
                     "",
-                    StickerStore.imageDataVersion(context, packId),
+                    String.valueOf(pack.version),
                     0,
-                    StickerStore.isAnimated(packId) ? 1 : 0,
+                    pack.animated ? 1 : 0,
             });
         }
         return cursor;
     }
 
-    private Cursor stickerCursor(String packId) {
+    private static Cursor stickerCursor(List<String> real) {
         MatrixCursor cursor = new MatrixCursor(STICKER_COLUMNS);
-        if (!StickerStore.isKnownPack(packId)) {
-            return cursor;
-        }
         int n = 1;
-        for (String file : StickerStore.stickerFiles(requireContext(), packId)) {
-            cursor.addRow(new Object[]{file, "⭐", "Test sticker " + n++});
+        for (String entry : PackPlanner.providerEntries(real)) {
+            cursor.addRow(new Object[]{entry, "🙂", "Sticker " + n++});
         }
         return cursor;
     }

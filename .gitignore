@@ -6,3 +6,4 @@ android/local.properties
 *.p12
 *.jks
 *.keystore
+android/app/src/main/assets/editor/

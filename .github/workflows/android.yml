@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'editor/**'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
@@ -23,6 +24,17 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+      - name: Test and build the editor
+        working-directory: editor
+        run: |
+          npm ci
+          npm test
+          npm run build
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -38,7 +50,7 @@ jobs:
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.p12
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-        run: gradle assembleRelease -PversionCode=${{ github.run_number }} --stacktrace
+        run: gradle test assembleRelease -PversionCode=${{ github.run_number }} --stacktrace
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,6 +58,6 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk sticker-bridge.apk
           gh release create "apk-${{ github.run_number }}" sticker-bridge.apk \
             --target "${{ github.sha }}" \
-            --title "Sticker Bridge build ${{ github.run_number }}" \
+            --title "Sticker Bridge 0.1.${{ github.run_number }}" \
             --notes "Download sticker-bridge.apk on your Android phone and open it to install." \
             --latest
