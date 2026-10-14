@@ -9,6 +9,8 @@ export interface Transform {
   scale: number;
   /** Radians, clockwise. */
   rotation: number;
+  /** Mirrors the image left to right. */
+  flip?: boolean;
 }
 
 export interface Point {
@@ -92,7 +94,7 @@ export function draw(
   ctx.save();
   ctx.translate(t.x, t.y);
   ctx.rotate(t.rotation);
-  ctx.scale(t.scale, t.scale);
+  ctx.scale(t.flip ? -t.scale : t.scale, t.scale);
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(image, -width / 2, -height / 2, width, height);
   ctx.restore();
@@ -112,10 +114,20 @@ export function toSource(t: Transform, p: Point, width: number, height: number):
   const dy = p.y - t.y;
   const cos = Math.cos(-t.rotation);
   const sin = Math.sin(-t.rotation);
+  const x = (dx * cos - dy * sin) / t.scale;
   return {
-    x: (dx * cos - dy * sin) / t.scale + width / 2,
+    x: (t.flip ? -x : x) + width / 2,
     y: (dx * sin + dy * cos) / t.scale + height / 2,
   };
+}
+
+/** How far the image moves on the sticker when its content moves by (dx, dy) source pixels. */
+export function sourceDeltaToSticker(t: Transform, dx: number, dy: number): Point {
+  const x = (t.flip ? -dx : dx) * t.scale;
+  const y = dy * t.scale;
+  const cos = Math.cos(t.rotation);
+  const sin = Math.sin(t.rotation);
+  return { x: x * cos - y * sin, y: x * sin + y * cos };
 }
 
 /** Centers a part of the image, for example the subject after background removal. */

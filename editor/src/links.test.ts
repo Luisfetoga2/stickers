@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { firstUrl } from './links';
+import { firstUrl, shortUrl } from './links';
 
 describe('firstUrl', () => {
   it('finds the link inside a share text', () => {
@@ -12,5 +12,12 @@ describe('firstUrl', () => {
 
   it('returns null without a link', () => {
     expect(firstUrl('tiktok video')).toBeNull();
+  });
+});
+
+describe('shortUrl', () => {
+  it('drops the scheme and www, and cuts long links', () => {
+    expect(shortUrl('https://www.reddit.com/r/cats')).toBe('reddit.com/r/cats');
+    expect(shortUrl('https://vm.tiktok.com/ZMabcdefghijklmnopqrstuvwxyz0123456789/')).toHaveLength(40);
   });
 });

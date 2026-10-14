@@ -12,6 +12,11 @@ export interface Frame {
   /** A complete single-image WebP file. */
   webp: Uint8Array;
   durationMs: number;
+  /** Where the frame sits on the canvas. x and y must be even. Without them, the frame covers the canvas. */
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
 }
 
 const ascii = (bytes: Uint8Array, at: number) => String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
@@ -106,13 +111,17 @@ export function muxAnimatedWebp(frames: Frame[], width: number, height: number):
     const image = webpChunks(frame.webp).filter((c) => c.fourcc === 'ALPH' || c.fourcc === 'VP8 ' || c.fourcc === 'VP8L');
     if (!image.some((c) => c.fourcc !== 'ALPH')) throw new Error('A frame has no image data.');
 
+    const x = frame.x ?? 0;
+    const y = frame.y ?? 0;
+    if (x % 2 || y % 2) throw new Error('Frame offsets must be even.');
     const anmf = new Writer();
-    anmf.uint(0, 3); // x offset / 2
-    anmf.uint(0, 3); // y offset / 2
-    anmf.uint(width - 1, 3);
-    anmf.uint(height - 1, 3);
+    anmf.uint(x / 2, 3);
+    anmf.uint(y / 2, 3);
+    anmf.uint((frame.width ?? width) - 1, 3);
+    anmf.uint((frame.height ?? height) - 1, 3);
     anmf.uint(Math.max(8, Math.round(frame.durationMs)), 3);
-    // Do not blend with the previous frame (0x02), so transparent areas stay transparent. Do not dispose.
+    // Do not blend with the canvas (0x02): the frame replaces its area, so see-through pixels stay see-through.
+    // Do not dispose: the rest of the canvas keeps the earlier frames.
     anmf.uint(0x02, 1);
     for (const c of image) anmf.chunk(c.fourcc, c.data);
     body.chunk('ANMF', anmf.result());

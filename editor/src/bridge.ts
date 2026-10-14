@@ -45,6 +45,8 @@ export interface AppEvents {
   onLinkError(message: string): void;
   /** GitHub has a newer APK, for example "0.1.13". */
   onUpdateAvailable(version: string): void;
+  /** The user copied a link since the last time the app looked. */
+  onClipboardLink(url: string): void;
 }
 
 interface BackgroundResult {

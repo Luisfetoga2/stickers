@@ -92,3 +92,19 @@ describe('muxAnimatedWebp', () => {
     expect(inner(chunks[3].data)).toEqual(['VP8 ']);
   });
 });
+
+describe('muxAnimatedWebp with frame areas', () => {
+  const frame = fakeWebp(chunk('VP8 ', [1, 2]));
+
+  it('stores the offset halved and the area size minus one', () => {
+    const out = muxAnimatedWebp([{ webp: frame, durationMs: 50, x: 10, y: 20, width: 30, height: 40 }], 512, 512);
+    const anmf = webpChunks(out)[2].data;
+    expect([u24(anmf, 0), u24(anmf, 3), u24(anmf, 6) + 1, u24(anmf, 9) + 1]).toEqual([5, 10, 30, 40]);
+  });
+
+  it('rejects odd offsets', () => {
+    expect(() => muxAnimatedWebp([{ webp: frame, durationMs: 50, x: 3, y: 0, width: 2, height: 2 }], 512, 512)).toThrow(
+      'Frame offsets must be even.',
+    );
+  });
+});

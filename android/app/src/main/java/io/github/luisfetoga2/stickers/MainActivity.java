@@ -3,7 +3,11 @@ package io.github.luisfetoga2.stickers;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -17,6 +21,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.view.WindowInsets;
+import android.view.textclassifier.TextClassifier;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -71,6 +76,8 @@ public class MainActivity extends Activity {
     private String[] pendingLinkEvent;
     /** The version name of a newer release on GitHub, waiting for the editor. */
     private String pendingUpdate;
+    /** A copied link to offer, waiting for the editor. */
+    private String pendingClipboardLink;
     /** MIME type of the file in sharedDir. Read on a WebView thread. */
     private volatile String sharedMime = "application/octet-stream";
 
@@ -175,6 +182,51 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleShare(intent);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Android lets an app read the clipboard only while it has focus.
+        if (hasFocus) {
+            checkClipboard();
+        }
+    }
+
+    /**
+     * Offers a link the user copied since the last look. Reading the clipboard shows a system message on
+     * Android 12 and newer, so the app reads it only when the clip is new, and skips clips that Android
+     * already marked as not a link.
+     */
+    private void checkClipboard() {
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        if (clipboard == null || !clipboard.hasPrimaryClip()) {
+            return;
+        }
+        ClipDescription description = clipboard.getPrimaryClipDescription();
+        if (description == null || !description.hasMimeType("text/*")) {
+            return;
+        }
+        SharedPreferences prefs = getSharedPreferences("clipboard", MODE_PRIVATE);
+        long stamp = description.getTimestamp();
+        if (stamp == prefs.getLong("lastClip", -1)) {
+            return;
+        }
+        prefs.edit().putLong("lastClip", stamp).apply();
+        if (Build.VERSION.SDK_INT >= 31
+                && description.getClassificationStatus() == ClipDescription.CLASSIFICATION_COMPLETE
+                && description.getConfidenceScore(TextClassifier.TYPE_URL) < 0.5f) {
+            return;
+        }
+        ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) {
+            return;
+        }
+        String url = LinkDownloader.firstUrl(String.valueOf(clip.getItemAt(0).coerceToText(this)));
+        if (url != null) {
+            pendingClipboardLink = url;
+            deliverShare();
+        }
     }
 
     /** The editor uses browser history for its screens, so Back returns to the start screen before it leaves. */
@@ -441,6 +493,10 @@ public class MainActivity extends Activity {
     }
 
     private void deliverShare() {
+        if (editorReady && pendingClipboardLink != null) {
+            callEditor("onClipboardLink", JSONObject.quote(pendingClipboardLink));
+            pendingClipboardLink = null;
+        }
         if (editorReady && pendingUpdate != null) {
             callEditor("onUpdateAvailable", JSONObject.quote(pendingUpdate));
             pendingUpdate = null;

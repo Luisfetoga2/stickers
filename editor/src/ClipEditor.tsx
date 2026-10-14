@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FPS_CHOICES, MAX_SECONDS, makeAnimated } from './animate';
+import { FPS_CHOICES, MAX_SECONDS, frameTimes, makeAnimated } from './animate';
 import { bridge } from './bridge';
 import { DEFAULT_CHROMA, chromaKey, detectKeyColor, toHex, type ChromaSettings } from './chroma';
 import type { Clip } from './clip';
@@ -8,7 +8,9 @@ import { Mask, ctx2d, newCanvas } from './mask';
 import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
-import { centered, toSource, type Point, type Transform } from './transform';
+import { followOffsets } from './follow';
+import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toGray } from './loop';
+import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
 import type { EditorProps } from './types';
 
 const MIN_LENGTH = 0.2;
@@ -50,11 +52,12 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const [fps, setFps] = useState(() => nearestFps(clip.defaultFps));
   const [shownTime, setShownTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [working, setWorking] = useState<'cutout' | 'encode' | null>(null);
+  const [working, setWorking] = useState<'cutout' | 'encode' | 'loop' | null>(null);
   const [matte, setMatte] = useState<Matte>('none');
   const [chroma, setChroma] = useState<ChromaSettings | null>(null);
   const [cutout, setCutout] = useState<ClipCutout | null>(null);
   const [tool, setTool] = useState<Tool>('move');
+  const [follow, setFollow] = useState(false);
   const [brushSize, setBrushSize] = useState(24);
   const [, setUndoVersion] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -326,14 +329,48 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     setChroma(null);
     setCutout(null);
     setTool('move');
+    setFollow(false);
     work.keep.reset();
     setStatus(null);
     show(matte === 'ai' ? start : shownTime);
   };
 
+  // Follow the subject: each frame's content moves so the subject stays at its average position.
+  const offsets = useMemo(() => {
+    if (!cutout) return null;
+    const k = work.width / clip.width;
+    return followOffsets(cutout.centers).map((o) => ({ x: o.x / k, y: o.y / k }));
+  }, [cutout, work, clip]);
+  const following = follow && matte === 'ai' && offsets !== null;
+
+  const followAt = useCallback(
+    (index: number, base: Transform): Transform => {
+      if (!offsets) return base;
+      const o = offsets[Math.max(0, Math.min(offsets.length - 1, index))];
+      const d = sourceDeltaToSticker(base, o.x, o.y);
+      return { ...base, x: base.x + d.x, y: base.y + d.y };
+    },
+    [offsets],
+  );
+
+  const followIndex = cutout ? cutout.indexAt(shownTime) : 0;
+  /** What the stage shows: the user's framing, moved for the frame on screen when following. */
+  const displayTransform = following ? followAt(followIndex, transform) : transform;
+
+  /** The stage reports moves in shown coordinates. The stored framing is the one without the follow shift. */
+  const onStageChange = (t: Transform) => {
+    if (!following || !offsets) {
+      setTransform(t);
+      return;
+    }
+    const o = offsets[followIndex];
+    const d = sourceDeltaToSticker(t, o.x, o.y);
+    setTransform({ ...t, x: t.x - d.x, y: t.y - d.y });
+  };
+
   /** Maps a sticker point to a pixel of the work-size frames. */
   const toWork = (p: Point): Point => {
-    const s = toSource(transform, p, clip.width, clip.height);
+    const s = toSource(displayTransform, p, clip.width, clip.height);
     const k = work.width / clip.width;
     return { x: s.x * k, y: s.y * k };
   };
@@ -399,6 +436,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
                   ? (times, onFrame, signal) =>
                       clip.readFrames(times, (frame, i) => onFrame(processFrame(frame, 0), i), signal)
                   : undefined,
+              transformAt: following && cutout ? (t, base) => followAt(cutout.indexAt(t), base) : undefined,
             };
       const animated = await makeAnimated(
         source,
@@ -422,6 +460,54 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
   const cancel = () => abortRef.current?.abort();
 
+  /** Reads small thumbnails around the trim and moves Start and End to the two frames that match best. */
+  const findLoopPoint = async () => {
+    setPlaying(false);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setWorking('loop');
+    try {
+      const times = frameTimes(
+        Math.max(0, start - LOOP_SEARCH_MARGIN),
+        Math.min(clip.duration, end + LOOP_SEARCH_MARGIN),
+        LOOP_SCAN_FPS,
+      );
+      const scale = THUMB_SIDE / Math.max(clip.width, clip.height);
+      const thumb = newCanvas(Math.max(1, Math.round(clip.width * scale)), Math.max(1, Math.round(clip.height * scale)));
+      const ctx = thumb.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas is not available.');
+      const thumbs: Uint8Array[] = [];
+      await clip.readFrames(
+        times,
+        (frame, i) => {
+          if (i % 10 === 0) setStatus({ kind: 'info', text: `Looking for a loop: frame ${i + 1} of ${times.length}…` });
+          ctx.clearRect(0, 0, thumb.width, thumb.height);
+          // With a green screen, compare the keyed frames, so the subject's shape counts and the screen does not.
+          ctx.drawImage(matte === 'chroma' ? processFrame(frame, 0) : frame, 0, 0, thumb.width, thumb.height);
+          thumbs.push(toGray(ctx.getImageData(0, 0, thumb.width, thumb.height).data));
+        },
+        controller.signal,
+      );
+      const loop = findLoop(thumbs, times, MIN_LOOP_SECONDS, MAX_SECONDS, end - start);
+      if (!loop) {
+        setStatus({ kind: 'error', text: 'This part of the video is too short to loop.' });
+        return;
+      }
+      setStart(loop.start);
+      setEnd(loop.end);
+      show(loop.start);
+      setStatus({
+        kind: 'ok',
+        text: `Loop from ${loop.start.toFixed(2)} s to ${loop.end.toFixed(2)} s. ${describeLoop(loop.difference)}`,
+      });
+    } catch (err) {
+      setStatus(controller.signal.aborted ? { kind: 'info', text: 'Cancelled.' } : { kind: 'error', text: errorText(err) });
+    } finally {
+      abortRef.current = null;
+      setWorking(null);
+    }
+  };
+
   const length = end - start;
   const brushing = matte !== 'none' && (tool === 'erase' || tool === 'restore');
 
@@ -432,8 +518,8 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         width={clip.width}
         height={clip.height}
         version={version}
-        transform={transform}
-        onChange={setTransform}
+        transform={displayTransform}
+        onChange={onStageChange}
         tool={matte === 'none' ? 'move' : tool}
         brushSize={tool === 'pick' ? 6 : brushSize}
         onBrushStart={onBrushStart}
@@ -507,11 +593,19 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       )}
 
       {matte === 'ai' && (
-        <div className="row">
-          <button className="ghost grow" onClick={turnOffMatte} disabled={locked}>
-            Bring back the background
-          </button>
-        </div>
+        <>
+          <div className="row">
+            <button className="ghost grow" onClick={turnOffMatte} disabled={locked}>
+              Bring back the background
+            </button>
+          </div>
+          <section className="controls">
+            <label className="check">
+              <input type="checkbox" checked={follow} disabled={locked} onChange={(e) => setFollow(e.target.checked)} />
+              <span>Follow the subject</span>
+            </label>
+          </section>
+        </>
       )}
 
       {matte !== 'none' && (
@@ -559,6 +653,11 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             ? 'Trim and frame rate are locked while the AI cutout is on. Bring the background back to change them.'
             : `Length ${length.toFixed(1)} s. WhatsApp allows up to ${MAX_SECONDS} s, and shorter clips look sharper.`}
         </p>
+        <div className="row">
+          <button className="ghost" onClick={findLoopPoint} disabled={locked || matte === 'ai'}>
+            Find loop
+          </button>
+        </div>
         <div className="segmented fps" role="tablist" aria-label="Frame rate">
           {FPS_CHOICES.map((f) => (
             <button
@@ -584,7 +683,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             onChange={setTransform}
             width={clip.width}
             height={clip.height}
-            onFrame={(mode) => setTransform(centered(clip.width, clip.height, mode))}
+            onFrame={(mode) => setTransform({ ...centered(clip.width, clip.height, mode), flip: transform.flip })}
           />
         )}
       </section>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SIZE, centered, drag, fillScale, fitBox, fitScale, normalizeAngle, pinch, toSource, zoomAround } from './transform';
+import { SIZE, centered, drag, fillScale, fitBox, fitScale, normalizeAngle, pinch, sourceDeltaToSticker, toSource, zoomAround } from './transform';
 
 const close = (a: number, b: number) => expect(a).toBeCloseTo(b, 6);
 
@@ -103,5 +103,27 @@ describe('fitBox', () => {
 
   it('fills the box with no margin', () => {
     expect(fitBox(1000, 1000, { x: 0, y: 0, width: 500, height: 250 }, 'fill').scale).toBeCloseTo(512 / 250, 6);
+  });
+});
+
+describe('flip', () => {
+  it('maps a sticker point to the mirrored source pixel', () => {
+    // Source (60, 25) is 10 px right of center. Flipped, it shows 10 px left of the image center.
+    const t = { x: 256, y: 256, scale: 1, rotation: 0, flip: true };
+    const p = toSource(t, { x: 246, y: 256 }, 100, 50);
+    close(p.x, 60);
+    close(p.y, 25);
+  });
+
+  it('turns content movement into mirrored sticker movement', () => {
+    const d = sourceDeltaToSticker({ x: 0, y: 0, scale: 2, rotation: 0, flip: true }, 10, 5);
+    close(d.x, -20);
+    close(d.y, 10);
+  });
+
+  it('rotates content movement with the image', () => {
+    const d = sourceDeltaToSticker({ x: 0, y: 0, scale: 1, rotation: Math.PI / 2 }, 10, 0);
+    close(d.x, 0);
+    close(d.y, 10);
   });
 });

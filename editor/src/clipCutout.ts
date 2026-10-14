@@ -1,6 +1,8 @@
 import { frameTimes } from './animate';
 import type { FrameCallback } from './clip';
+import { alphaCenter, fillGaps } from './follow';
 import { ctx2d, newCanvas } from './mask';
+import type { Point, Transform } from './transform';
 
 /** Anything that gives frames by time: a Clip, or a clip with its background removed. */
 export interface FrameSource {
@@ -9,6 +11,8 @@ export interface FrameSource {
   frameAt(seconds: number): Promise<CanvasImageSource>;
   /** Reads many frames in order, faster than frameAt in a loop. */
   readFrames?(times: number[], onFrame: FrameCallback, signal?: AbortSignal): Promise<void>;
+  /** The transform for the frame at a time, when it differs per frame, as with Follow the subject. */
+  transformAt?(seconds: number, base: Transform): Transform;
 }
 
 /** Reads frames with readFrames when the source has it, otherwise one at a time. */
@@ -27,6 +31,8 @@ export async function readFrames(
 
 /** Longest side of the frames the editor processes. Stickers are 512 px, so this leaves a little room to zoom. */
 export const WORK_SIDE = 640;
+/** Longest side of the copy used to find the subject's center. */
+const CENTER_SIDE = 96;
 /** Longest side of the frames sent to ML Kit. Smaller is faster, and the mask is scaled back up. */
 const MODEL_SIDE = 512;
 export const MAX_CUTOUT_FRAMES = 150;
@@ -73,6 +79,8 @@ export class ClipCutout {
     readonly fps: number,
     readonly times: number[],
     private frames: ImageBitmap[],
+    /** The subject's center in each frame, in work pixels. Follow the subject uses it. */
+    readonly centers: Point[],
   ) {}
 
   static async build(
@@ -102,6 +110,11 @@ export class ClipCutout {
     if (!maskCtx) throw new Error('Canvas is not available.');
 
     const frames: ImageBitmap[] = [];
+    const centers: Array<Point | null> = [];
+    const centerScale = Math.min(1, CENTER_SIDE / Math.max(width, height));
+    const small = newCanvas(Math.max(1, Math.round(width * centerScale)), Math.max(1, Math.round(height * centerScale)));
+    const smallCtx = small.getContext('2d', { willReadFrequently: true });
+    if (!smallCtx) throw new Error('Canvas is not available.');
     let sources: ImageBitmap[] = [];
     let modelMsTotal = 0;
     let modelReports = 0;
@@ -152,6 +165,11 @@ export class ClipCutout {
         workCtx.globalCompositeOperation = 'source-over';
         frames.push(await createImageBitmap(work));
 
+        smallCtx.clearRect(0, 0, small.width, small.height);
+        smallCtx.drawImage(work, 0, 0, small.width, small.height);
+        const center = alphaCenter(smallCtx.getImageData(0, 0, small.width, small.height).data, small.width, small.height);
+        centers.push(center && { x: center.x / centerScale, y: center.y / centerScale });
+
         onProgress({
           phase: 'cutting',
           done: i + 1,
@@ -168,8 +186,9 @@ export class ClipCutout {
       work.width = 0;
       model.width = 0;
       maskCanvas.width = 0;
+      small.width = 0;
     }
-    return new ClipCutout(start, fps, times, frames);
+    return new ClipCutout(start, fps, times, frames, fillGaps(centers, { x: width / 2, y: height / 2 }));
   }
 
   get width(): number {

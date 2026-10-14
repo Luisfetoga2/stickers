@@ -34,7 +34,8 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
   /** Fits what is left of the photo, so a cutout fills the sticker. */
   const frame = (mode: 'fit' | 'fill') => {
     const box = cutout.edited ? cutout.contentBounds() : null;
-    setTransform(box ? fitBox(cutout.width, cutout.height, box, mode) : centered(cutout.width, cutout.height, mode));
+    const framed = box ? fitBox(cutout.width, cutout.height, box, mode) : centered(cutout.width, cutout.height, mode);
+    setTransform({ ...framed, flip: transform.flip });
   };
 
   const removeBackground = async () => {
@@ -51,7 +52,7 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
         cutout.undo();
         setStatus({ kind: 'error', text: 'No subject found in this photo. Use the Erase brush instead.' });
       } else {
-        setTransform(fitBox(cutout.width, cutout.height, box, 'fit'));
+        setTransform((t) => ({ ...fitBox(cutout.width, cutout.height, box, 'fit'), flip: t.flip }));
         setStatus({ kind: 'ok', text: 'Background removed. Use Erase and Restore to fix the edges.' });
       }
       bump();

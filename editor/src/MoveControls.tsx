@@ -52,6 +52,13 @@ export function MoveControls({ transform, onChange, width, height, onFrame }: Pr
         >
           Turn 90°
         </button>
+        <button
+          className={transform.flip ? 'secondary' : 'ghost'}
+          aria-pressed={!!transform.flip}
+          onClick={() => onChange({ ...transform, flip: !transform.flip })}
+        >
+          Flip
+        </button>
       </div>
     </>
   );

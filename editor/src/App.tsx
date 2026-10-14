@@ -4,7 +4,7 @@ import { ClipEditor } from './ClipEditor';
 import { isVideo, mayBeAnimated, openAnimatedImage, openVideo, type Clip } from './clip';
 import { Cutout } from './cutout';
 import { kb } from './encode';
-import { firstUrl } from './links';
+import { firstUrl, shortUrl } from './links';
 import { PhotoEditor } from './PhotoEditor';
 import { StickersScreen } from './StickersScreen';
 import type { Status } from './types';
@@ -37,6 +37,7 @@ export function App() {
   const [link, setLink] = useState('');
   const [linkBusy, setLinkBusy] = useState(false);
   const [newVersion, setNewVersion] = useState<string | null>(null);
+  const [copiedLink, setCopiedLink] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (blob: Blob, mime: string, name = '') => {
@@ -96,6 +97,9 @@ export function App() {
       onUpdateAvailable(version) {
         setNewVersion(version);
       },
+      onClipboardLink(url) {
+        setCopiedLink(url);
+      },
     });
   }, [load]);
 
@@ -144,6 +148,16 @@ export function App() {
     }
   };
 
+  const startLink = (url: string) => {
+    setCopiedLink(null);
+    if (!bridge.openLink(url)) {
+      setStatus({ kind: 'error', text: 'Links work only in the Android app.' });
+      return;
+    }
+    setLinkBusy(true);
+    setStatus({ kind: 'info', text: 'Opening the link…' });
+  };
+
   const openLink = (e: React.FormEvent) => {
     e.preventDefault();
     const url = firstUrl(link);
@@ -151,12 +165,7 @@ export function App() {
       setStatus({ kind: 'error', text: 'There is no link in that text. A link starts with https://' });
       return;
     }
-    if (!bridge.openLink(url)) {
-      setStatus({ kind: 'error', text: 'Links work only in the Android app.' });
-      return;
-    }
-    setLinkBusy(true);
-    setStatus({ kind: 'info', text: 'Opening the link…' });
+    startLink(url);
   };
 
   const openStickers = () => {
@@ -190,6 +199,22 @@ export function App() {
               <button className="primary" onClick={pick} disabled={linkBusy}>
                 Pick a file
               </button>
+              {copiedLink && !linkBusy && (
+                <div className="copied">
+                  <p>
+                    Open the link you copied?
+                    <span className="hint">{shortUrl(copiedLink)}</span>
+                  </p>
+                  <div className="row">
+                    <button className="primary" onClick={() => startLink(copiedLink)}>
+                      Open
+                    </button>
+                    <button className="ghost" onClick={() => setCopiedLink(null)}>
+                      Not now
+                    </button>
+                  </div>
+                </div>
+              )}
               <form className="link-form" onSubmit={openLink}>
                 <input
                   type="text"
