@@ -243,3 +243,28 @@ button:disabled {
 input[type='range']:disabled {
   opacity: 0.5;
 }
+
+.key-row {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.swatch {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.controls label.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.controls label.check input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}

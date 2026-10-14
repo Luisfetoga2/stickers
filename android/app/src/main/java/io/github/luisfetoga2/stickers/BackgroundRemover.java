@@ -2,6 +2,7 @@ package io.github.luisfetoga2.stickers;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.os.SystemClock;
 
 import com.google.android.gms.common.moduleinstall.InstallStatusListener;
 import com.google.android.gms.common.moduleinstall.ModuleInstall;
@@ -25,8 +26,11 @@ final class BackgroundRemover {
     interface Callback {
         void onProgress(String message);
 
-        /** A white bitmap whose alpha channel is the subject confidence, the same size as the photo. */
-        void onMask(Bitmap mask);
+        /**
+         * A white bitmap whose alpha channel is the subject confidence, the same size as the photo.
+         * modelMs is the time ML Kit itself took.
+         */
+        void onMask(Bitmap mask, long modelMs);
 
         void onError(String message);
     }
@@ -111,14 +115,16 @@ final class BackgroundRemover {
     }
 
     private void segment(Bitmap photo, Callback callback) {
+        long started = SystemClock.elapsedRealtime();
         segmenter.process(InputImage.fromBitmap(photo, 0))
                 .addOnSuccessListener(worker, result -> {
+                    long modelMs = SystemClock.elapsedRealtime() - started;
                     FloatBuffer confidence = result.getForegroundConfidenceMask();
                     if (confidence == null) {
                         callback.onError("Background removal returned no mask.");
                         return;
                     }
-                    callback.onMask(toMask(confidence, photo.getWidth(), photo.getHeight()));
+                    callback.onMask(toMask(confidence, photo.getWidth(), photo.getHeight()), modelMs);
                 })
                 .addOnFailureListener(e -> callback.onError("Background removal failed: " + e.getMessage()));
     }

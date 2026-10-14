@@ -310,6 +310,19 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void sendMaskResult(String id, String url, long modelMs) {
+        try {
+            callEditor("onBackgroundResult", new JSONObject()
+                    .put("id", id)
+                    .put("ok", true)
+                    .put("url", url)
+                    .put("ms", modelMs)
+                    .toString());
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     private void sendBackgroundProgress(String id, String message) {
         try {
             callEditor("onBackgroundProgress", new JSONObject().put("id", id).put("message", message).toString());
@@ -451,11 +464,11 @@ public class MainActivity extends Activity {
                     }
 
                     @Override
-                    public void onMask(Bitmap mask) {
+                    public void onMask(Bitmap mask, long modelMs) {
                         // Runs on the io thread.
                         try {
                             String url = "https://" + HOST + "/work/" + saveMask(mask);
-                            main.post(() -> sendBackgroundResult(id, true, "url", url));
+                            main.post(() -> sendMaskResult(id, url, modelMs));
                         } catch (IOException e) {
                             main.post(() -> sendBackgroundResult(id, false, "message", e.getMessage()));
                         }

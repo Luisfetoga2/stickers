@@ -52,7 +52,8 @@ The flow on the phone:
 ### Background removal for video (Phase 3b)
 
 - The app runs the same ML Kit model on every frame, at a size close to the 512 px sticker. A progress bar shows the frames that are done.
-- Each mask is blended with the masks of the frames next to it. This keeps the edges from flickering.
+- Each mask gets sharper edges, so the half-sure band around the subject does not show old background. (Blending masks across frames was tried and dropped, because moving parts turned see-through and showed ghost copies.)
+- A Green screen mode removes one color with a chroma key. It needs no AI, runs live, and also removes the green tint at the edges.
 - An erase stroke applies to every frame. It removes things that stay still, such as a logo or a corner.
 - If the general model flickers too much on people, the fallback is the ML Kit selfie model, which is made for video.
 

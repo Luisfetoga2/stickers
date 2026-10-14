@@ -17,6 +17,7 @@ const HINTS: Record<Tool, string> = {
   move: 'Drag to move. Pinch to zoom and rotate. The checkerboard area stays see-through.',
   erase: 'One finger erases. Two fingers move and zoom.',
   restore: 'One finger paints the photo back. Two fingers move and zoom.',
+  pick: '',
 };
 
 export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { cutout: Cutout }) {
@@ -40,7 +41,7 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
     setStatus({ kind: 'info', text: 'Removing the background…' });
     try {
       const jpeg = await cutout.photoJpeg();
-      const mask = await bridge.removeBackground(jpeg, (text) => setStatus({ kind: 'info', text }));
+      const { mask } = await bridge.removeBackground(jpeg, (text) => setStatus({ kind: 'info', text }));
       const bitmap = await createImageBitmap(mask);
       cutout.applyMask(bitmap);
       bitmap.close();
@@ -64,7 +65,7 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
   const source = (p: Point) => toSource(transform, p, cutout.width, cutout.height);
 
   const onBrushStart = (p: Point) => {
-    if (tool === 'move') return;
+    if (tool !== 'erase' && tool !== 'restore') return;
     cutout.snapshot();
     const s = source(p);
     cutout.stroke(s, s, brushRadius(), tool);
@@ -72,7 +73,7 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
   };
 
   const onBrushMove = (from: Point, to: Point) => {
-    if (tool === 'move') return;
+    if (tool !== 'erase' && tool !== 'restore') return;
     cutout.stroke(source(from), source(to), brushRadius(), tool);
     bump();
   };

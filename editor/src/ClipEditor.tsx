@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FPS_CHOICES, MAX_SECONDS, makeAnimated } from './animate';
 import { bridge } from './bridge';
+import { DEFAULT_CHROMA, chromaKey, detectKeyColor, toHex, type ChromaSettings } from './chroma';
 import type { Clip } from './clip';
-import { ClipCutout } from './clipCutout';
+import { ClipCutout, workSize, type FrameSource } from './clipCutout';
+import { Mask, ctx2d, newCanvas } from './mask';
 import { MoveControls } from './MoveControls';
 import { Stage, type Tool } from './Stage';
 import { centered, toSource, type Point, type Transform } from './transform';
@@ -10,6 +12,9 @@ import type { EditorProps } from './types';
 
 const MIN_LENGTH = 0.2;
 const DEFAULT_LENGTH = 4;
+
+/** How the background is removed: not at all, by color (green screen), or by ML Kit, frame by frame. */
+type Matte = 'none' | 'chroma' | 'ai';
 
 const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: 'move', label: 'Move' },
@@ -21,13 +26,20 @@ function nearestFps(fps: number): number {
   return FPS_CHOICES.reduce((best, f) => (Math.abs(f - fps) < Math.abs(best - fps) ? f : best));
 }
 
-/** Trim, frame, cut out, and encode a video or GIF into an animated sticker. */
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** Trim, frame, remove the background of, and encode a video or GIF into an animated sticker. */
 export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { clip: Clip }) {
-  const still = useMemo(() => {
-    const c = document.createElement('canvas');
-    c.width = clip.width;
-    c.height = clip.height;
-    return c;
+  const still = useMemo(() => newCanvas(clip.width, clip.height), [clip]);
+
+  // Green screen and AI cutout work at a smaller size. `raw` holds the current frame before keying.
+  const work = useMemo(() => {
+    const { width, height } = workSize(clip.width, clip.height);
+    const raw = newCanvas(width, height);
+    const rawCtx = raw.getContext('2d', { willReadFrequently: true });
+    const out = newCanvas(width, height);
+    if (!rawCtx) throw new Error('Canvas is not available.');
+    return { width, height, raw, rawCtx, out, outCtx: ctx2d(out), keep: new Mask(width, height) };
   }, [clip]);
 
   const [version, setVersion] = useState(0);
@@ -38,14 +50,21 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const [shownTime, setShownTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [working, setWorking] = useState<'cutout' | 'encode' | null>(null);
+  const [matte, setMatte] = useState<Matte>('none');
+  const [chroma, setChroma] = useState<ChromaSettings | null>(null);
   const [cutout, setCutout] = useState<ClipCutout | null>(null);
   const [tool, setTool] = useState<Tool>('move');
   const [brushSize, setBrushSize] = useState(24);
+  const [, setUndoVersion] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const shownIndex = useRef(0);
   const locked = busy || working !== null;
 
   useEffect(() => () => cutout?.dispose(), [cutout]);
+
+  // The play loop and the encoder read the matte through this ref, so slider changes apply at once.
+  const matteRef = useRef({ matte, chroma, cutout });
+  matteRef.current = { matte, chroma, cutout };
 
   /** Copies a frame into the still canvas that the stage shows. */
   const paint = useCallback(
@@ -59,13 +78,42 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     [still],
   );
 
-  const paintCutout = useCallback(
-    (c: ClipCutout, index: number) => {
-      shownIndex.current = index;
-      paint(c.render(index));
-      setShownTime(c.times[index]);
+  const applyKeep = useCallback(() => {
+    const ctx = work.outCtx;
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(work.keep.canvas, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+  }, [work]);
+
+  /** Keys the frame in `raw` with the current settings into `out`. */
+  const keyFromRaw = useCallback((): HTMLCanvasElement => {
+    const pixels = work.rawCtx.getImageData(0, 0, work.width, work.height);
+    const settings = matteRef.current.chroma;
+    if (settings) chromaKey(pixels.data, settings);
+    work.outCtx.putImageData(pixels, 0, 0);
+    applyKeep();
+    return work.out;
+  }, [work, applyKeep]);
+
+  /** Turns a source frame, or a cut-out frame index, into what the sticker shows. */
+  const processFrame = useCallback(
+    (source: CanvasImageSource | null, index: number): CanvasImageSource => {
+      const { matte: m, cutout: c } = matteRef.current;
+      if (m === 'ai' && c) {
+        work.outCtx.clearRect(0, 0, work.width, work.height);
+        work.outCtx.drawImage(c.frame(index), 0, 0);
+        applyKeep();
+        return work.out;
+      }
+      if (!source) throw new Error('No frame to show.');
+      if (m === 'chroma') {
+        work.rawCtx.clearRect(0, 0, work.width, work.height);
+        work.rawCtx.drawImage(source, 0, 0, work.width, work.height);
+        return keyFromRaw();
+      }
+      return source;
     },
-    [paint],
+    [work, applyKeep, keyFromRaw],
   );
 
   // Shows the exact frame at a time. While a seek runs, only the newest request waits, so dragging stays responsive.
@@ -73,6 +121,14 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const showing = useRef(false);
   const show = useCallback(
     (seconds: number) => {
+      const c = matteRef.current.matte === 'ai' ? matteRef.current.cutout : null;
+      if (c) {
+        const index = c.indexAt(seconds);
+        shownIndex.current = index;
+        paint(processFrame(null, index));
+        setShownTime(c.times[index]);
+        return;
+      }
       pendingTime.current = seconds;
       if (showing.current) return;
       showing.current = true;
@@ -81,7 +137,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           const t = pendingTime.current;
           pendingTime.current = null;
           try {
-            paint(await clip.frameAt(t));
+            paint(processFrame(await clip.frameAt(t), 0));
             setShownTime(t);
           } catch {
             // A failed seek leaves the last frame on screen.
@@ -90,12 +146,24 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         showing.current = false;
       })();
     },
-    [clip, paint],
+    [clip, paint, processFrame],
   );
+
+  /** Redraws the frame on screen after a matte or brush change, without seeking. */
+  const repaint = useCallback(() => {
+    const { matte: m } = matteRef.current;
+    if (m === 'ai') paint(processFrame(null, shownIndex.current));
+    else if (m === 'chroma') paint(keyFromRaw());
+  }, [paint, processFrame, keyFromRaw]);
 
   useEffect(() => {
     show(0);
   }, [show]);
+
+  useEffect(() => {
+    if (!playing) repaint();
+    // Repaint only when the green screen settings change.
+  }, [chroma]);
 
   // Plays the trimmed clip in a loop inside the stage, at the chosen frame rate.
   // A timer drives it instead of requestAnimationFrame, which pauses in some embedded views.
@@ -104,15 +172,17 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     let timer = 0;
     let stopped = false;
 
-    if (cutout) {
-      const began = performance.now() - cutout.indexAt(shownTime) * (1000 / cutout.fps);
+    if (matte === 'ai' && cutout) {
+      const began = performance.now() - shownIndex.current * (1000 / cutout.fps);
       let last = -1;
       const tick = () => {
         if (stopped) return;
         const index = Math.floor(((performance.now() - began) / 1000) * cutout.fps) % cutout.count;
         if (index !== last) {
           last = index;
-          paintCutout(cutout, index);
+          shownIndex.current = index;
+          paint(processFrame(null, index));
+          setShownTime(cutout.times[index]);
         }
         timer = window.setTimeout(tick, 15);
       };
@@ -146,7 +216,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           const index = Math.floor((t - start) * fps);
           if (index !== lastIndex) {
             lastIndex = index;
-            paint(clip.current());
+            paint(processFrame(clip.current(), 0));
             setShownTime(t);
           }
         }
@@ -160,8 +230,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       clearTimeout(timer);
       clip.pause();
     };
-    // shownTime is only read when playback starts.
-  }, [playing, clip, cutout, start, end, fps, paint, paintCutout]);
+  }, [playing, clip, matte, cutout, start, end, fps, paint, processFrame]);
 
   const changeStart = (value: number) => {
     setPlaying(false);
@@ -182,9 +251,27 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     show(Math.max(s, e - 1 / fps));
   };
 
-  const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+  const startGreenScreen = async () => {
+    setPlaying(false);
+    try {
+      const frame = await clip.frameAt(shownTime);
+      work.rawCtx.clearRect(0, 0, work.width, work.height);
+      work.rawCtx.drawImage(frame, 0, 0, work.width, work.height);
+      const pixels = work.rawCtx.getImageData(0, 0, work.width, work.height);
+      const key = detectKeyColor(pixels.data, work.width, work.height);
+      matteRef.current = { ...matteRef.current, matte: 'chroma' };
+      setMatte('chroma');
+      setChroma({ ...DEFAULT_CHROMA, key });
+      setStatus({
+        kind: 'ok',
+        text: 'Green screen on. If the wrong color is gone, tap Pick color and tap the screen in the video.',
+      });
+    } catch (err) {
+      setStatus({ kind: 'error', text: errorText(err) });
+    }
+  };
 
-  const removeBackground = async () => {
+  const startAiCutout = async () => {
     setPlaying(false);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -201,15 +288,21 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             // Per-frame messages would hide the frame count. Only the one-time model download matters.
             if (text.startsWith('Downloading')) setStatus({ kind: 'info', text });
           }),
-        ({ done, total, secondsPerFrame }) =>
+        ({ done, total, secondsPerFrame, modelSecondsPerFrame }) =>
           setStatus({
             kind: 'info',
-            text: `Removing the background: frame ${done} of ${total}, ${secondsPerFrame.toFixed(2)} s per frame, about ${Math.ceil((total - done) * secondsPerFrame)} s left.`,
+            text:
+              `AI cutout: frame ${done} of ${total}, ${secondsPerFrame.toFixed(2)} s per frame` +
+              (modelSecondsPerFrame !== null ? ` (ML Kit ${modelSecondsPerFrame.toFixed(2)} s)` : '') +
+              `, about ${Math.ceil((total - done) * secondsPerFrame)} s left.`,
           }),
         controller.signal,
       );
+      matteRef.current = { ...matteRef.current, matte: 'ai', cutout: built };
       setCutout(built);
-      paintCutout(built, 0);
+      setMatte('ai');
+      setTool('move');
+      show(start);
       const seconds = ((performance.now() - began) / 1000).toFixed(1);
       setStatus({
         kind: 'ok',
@@ -223,39 +316,62 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     }
   };
 
-  const clearCutout = () => {
+  const turnOffMatte = () => {
     setPlaying(false);
+    matteRef.current = { matte: 'none', chroma: null, cutout: null };
+    setMatte('none');
+    setChroma(null);
     setCutout(null);
     setTool('move');
+    work.keep.reset();
     setStatus(null);
-    show(start);
+    show(matte === 'ai' ? start : shownTime);
   };
 
-  /** Maps a sticker point to a pixel of the cut-out frames. */
-  const toFrame = (c: ClipCutout, p: Point): Point => {
+  /** Maps a sticker point to a pixel of the work-size frames. */
+  const toWork = (p: Point): Point => {
     const s = toSource(transform, p, clip.width, clip.height);
-    const k = c.width / clip.width;
+    const k = work.width / clip.width;
     return { x: s.x * k, y: s.y * k };
   };
-  const frameRadius = (c: ClipCutout) => (brushSize / transform.scale) * (c.width / clip.width);
+  const workRadius = () => (brushSize / transform.scale) * (work.width / clip.width);
+
+  const pickColor = (p: Point) => {
+    const f = toWork(p);
+    const x = Math.round(Math.max(0, Math.min(work.width - 1, f.x)));
+    const y = Math.round(Math.max(0, Math.min(work.height - 1, f.y)));
+    const [r, g, b] = work.rawCtx.getImageData(x, y, 1, 1).data;
+    setChroma((c) => (c ? { ...c, key: [r, g, b] } : c));
+    setTool('move');
+    setStatus({ kind: 'ok', text: `Screen color set to ${toHex([r, g, b])}.` });
+  };
 
   const onBrushStart = (p: Point) => {
-    if (!cutout || tool === 'move') return;
+    if (matte === 'none') return;
+    if (tool === 'pick') {
+      pickColor(p);
+      return;
+    }
+    if (tool !== 'erase' && tool !== 'restore') return;
     setPlaying(false);
-    cutout.keep.snapshot();
-    const f = toFrame(cutout, p);
-    cutout.stroke(f, f, frameRadius(cutout), tool);
-    paintCutout(cutout, shownIndex.current);
+    work.keep.snapshot();
+    setUndoVersion((v) => v + 1);
+    const f = toWork(p);
+    work.keep.stroke(f, f, workRadius(), tool);
+    repaint();
   };
 
   const onBrushMove = (from: Point, to: Point) => {
-    if (!cutout || tool === 'move') return;
-    cutout.stroke(toFrame(cutout, from), toFrame(cutout, to), frameRadius(cutout), tool);
-    paintCutout(cutout, shownIndex.current);
+    if (matte === 'none' || (tool !== 'erase' && tool !== 'restore')) return;
+    work.keep.stroke(toWork(from), toWork(to), workRadius(), tool);
+    repaint();
   };
 
   const undo = () => {
-    if (cutout?.keep.undo()) paintCutout(cutout, shownIndex.current);
+    if (work.keep.undo()) {
+      setUndoVersion((v) => v + 1);
+      repaint();
+    }
   };
 
   const add = async () => {
@@ -264,7 +380,17 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     abortRef.current = controller;
     setWorking('encode');
     try {
-      const source = cutout ? cutout.asSource(clip.width, clip.height) : clip;
+      const source: FrameSource =
+        matte === 'none'
+          ? clip
+          : {
+              width: clip.width,
+              height: clip.height,
+              frameAt: async (t) =>
+                matte === 'ai' && cutout
+                  ? processFrame(null, cutout.indexAt(t))
+                  : processFrame(await clip.frameAt(t), 0),
+            };
       const animated = await makeAnimated(
         source,
         transform,
@@ -280,12 +406,15 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     } finally {
       abortRef.current = null;
       setWorking(null);
+      // Encoding reused the work canvases, so show the current frame again.
+      show(shownTime);
     }
   };
 
   const cancel = () => abortRef.current?.abort();
 
   const length = end - start;
+  const brushing = matte !== 'none' && (tool === 'erase' || tool === 'restore');
 
   return (
     <>
@@ -296,8 +425,8 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         version={version}
         transform={transform}
         onChange={setTransform}
-        tool={cutout ? tool : 'move'}
-        brushSize={brushSize}
+        tool={matte === 'none' ? 'move' : tool}
+        brushSize={tool === 'pick' ? 6 : brushSize}
         onBrushStart={onBrushStart}
         onBrushMove={onBrushMove}
       />
@@ -308,42 +437,98 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         </button>
         <p className="hint">
           {shownTime.toFixed(2)} s of {clip.duration.toFixed(1)} s.{' '}
-          {cutout && tool !== 'move'
-            ? 'One finger paints on every frame. Two fingers move and zoom.'
-            : 'Drag to move. Pinch to zoom and rotate.'}
+          {tool === 'pick'
+            ? 'Tap the green screen in the video.'
+            : brushing
+              ? 'One finger paints on every frame. Two fingers move and zoom.'
+              : 'Drag to move. Pinch to zoom and rotate.'}
         </p>
       </div>
 
-      <div className="row">
-        {cutout ? (
-          <button className="ghost grow" onClick={clearCutout} disabled={locked}>
+      {matte === 'none' && (
+        <div className="row">
+          <button className="secondary grow" onClick={startGreenScreen} disabled={locked}>
+            Green screen
+          </button>
+          <button className="secondary grow" onClick={startAiCutout} disabled={locked}>
+            AI cutout
+          </button>
+        </div>
+      )}
+
+      {matte === 'chroma' && chroma && (
+        <section className="controls">
+          <div className="row key-row">
+            <span className="swatch" style={{ background: toHex(chroma.key) }} />
+            <span className="grow">Screen color</span>
+            <button className="ghost" onClick={() => setTool(tool === 'pick' ? 'move' : 'pick')} disabled={locked}>
+              {tool === 'pick' ? 'Tap the video' : 'Pick color'}
+            </button>
+          </div>
+          <label>
+            <span>Tolerance</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={chroma.tolerance}
+              onChange={(e) => setChroma({ ...chroma, tolerance: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            <span>Softness</span>
+            <input
+              type="range"
+              min={0}
+              max={0.6}
+              step={0.01}
+              value={chroma.softness}
+              onChange={(e) => setChroma({ ...chroma, softness: Number(e.target.value) })}
+            />
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={chroma.despill}
+              onChange={(e) => setChroma({ ...chroma, despill: e.target.checked })}
+            />
+            <span>Remove the green tint at the edges</span>
+          </label>
+          <div className="row">
+            <button className="ghost" onClick={turnOffMatte} disabled={locked}>
+              Turn off green screen
+            </button>
+          </div>
+        </section>
+      )}
+
+      {matte === 'ai' && (
+        <div className="row">
+          <button className="ghost grow" onClick={turnOffMatte} disabled={locked}>
             Bring back the background
           </button>
-        ) : (
-          <button className="secondary grow" onClick={removeBackground} disabled={locked}>
-            Remove background
-          </button>
-        )}
-        {cutout && (
-          <button className="ghost" onClick={undo} disabled={!cutout.keep.canUndo || locked}>
+        </div>
+      )}
+
+      {matte !== 'none' && (
+        <div className="row">
+          <div className="segmented grow" role="tablist">
+            {TOOLS.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={tool === t.id}
+                className={tool === t.id ? 'on' : ''}
+                onClick={() => setTool(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <button className="ghost" onClick={undo} disabled={!work.keep.canUndo || locked}>
             Undo
           </button>
-        )}
-      </div>
-
-      {cutout && (
-        <div className="segmented" role="tablist">
-          {TOOLS.map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={tool === t.id}
-              className={tool === t.id ? 'on' : ''}
-              onClick={() => setTool(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
         </div>
       )}
 
@@ -356,7 +541,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             max={clip.duration}
             step={0.01}
             value={start}
-            disabled={locked || !!cutout}
+            disabled={locked || matte === 'ai'}
             onChange={(e) => changeStart(Number(e.target.value))}
           />
         </label>
@@ -368,13 +553,13 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             max={clip.duration}
             step={0.01}
             value={end}
-            disabled={locked || !!cutout}
+            disabled={locked || matte === 'ai'}
             onChange={(e) => changeEnd(Number(e.target.value))}
           />
         </label>
         <p className="hint">
-          {cutout
-            ? 'Trim and frame rate are locked while the background is removed. Bring the background back to change them.'
+          {matte === 'ai'
+            ? 'Trim and frame rate are locked while the AI cutout is on. Bring the background back to change them.'
             : `Length ${length.toFixed(1)} s. WhatsApp allows up to ${MAX_SECONDS} s, and shorter clips look sharper.`}
         </p>
         <div className="segmented fps" role="tablist" aria-label="Frame rate">
@@ -384,7 +569,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
               role="tab"
               aria-selected={fps === f}
               className={fps === f ? 'on' : ''}
-              disabled={locked || !!cutout}
+              disabled={locked || matte === 'ai'}
               onClick={() => setFps(f)}
             >
               {f} fps
@@ -394,7 +579,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       </section>
 
       <section className="controls">
-        {cutout && tool !== 'move' ? (
+        {brushing ? (
           <label>
             <span>Brush {brushSize}</span>
             <input

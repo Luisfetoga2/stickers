@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { SIZE, drag, draw, pinch, zoomAround, type Point, type Transform } from './transform';
 
-export type Tool = 'move' | 'erase' | 'restore';
+export type Tool = 'move' | 'erase' | 'restore' | 'pick';
 
 interface Props {
   image: CanvasImageSource;

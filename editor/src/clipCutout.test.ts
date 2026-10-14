@@ -1,23 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { smoothingWeights } from './clipCutout';
+import { hardenAlpha, workSize } from './clipCutout';
 
-describe('smoothingWeights', () => {
-  it('blends a middle frame with both neighbors', () => {
-    expect(smoothingWeights(5, 10)).toEqual([
-      [4, 0.25],
-      [5, 0.5],
-      [6, 0.25],
-    ]);
+describe('hardenAlpha', () => {
+  it('removes unsure pixels, keeps sure ones, and fades between', () => {
+    const data = Uint8ClampedArray.from([0, 0, 0, 50, 0, 0, 0, 128, 0, 0, 0, 200]);
+    hardenAlpha(data);
+    expect(data[3]).toBe(0);
+    expect(data[7]).toBeGreaterThan(100);
+    expect(data[7]).toBeLessThan(160);
+    expect(data[11]).toBe(255);
   });
 
-  it('shares out the missing neighbor at the first frame', () => {
-    const w = smoothingWeights(0, 10);
-    expect(w.map(([j]) => j)).toEqual([0, 1]);
-    expect(w[0][1]).toBeCloseTo(2 / 3, 6);
-    expect(w[1][1]).toBeCloseTo(1 / 3, 6);
+  it('leaves color channels alone', () => {
+    const data = Uint8ClampedArray.from([1, 2, 3, 200]);
+    hardenAlpha(data);
+    expect([...data.slice(0, 3)]).toEqual([1, 2, 3]);
+  });
+});
+
+describe('workSize', () => {
+  it('scales a 1080p frame to 640 px wide', () => {
+    expect(workSize(1920, 1080)).toEqual({ width: 640, height: 360 });
   });
 
-  it('uses the frame alone when there is only one', () => {
-    expect(smoothingWeights(0, 1)).toEqual([[0, 1]]);
+  it('keeps small frames as they are', () => {
+    expect(workSize(320, 240)).toEqual({ width: 320, height: 240 });
   });
 });

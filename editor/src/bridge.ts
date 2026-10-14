@@ -22,6 +22,8 @@ interface BackgroundResult {
   ok: boolean;
   /** A PNG whose alpha channel is the mask. Set when ok is true. */
   url?: string;
+  /** Time ML Kit itself took, in milliseconds. */
+  ms?: number;
   message?: string;
 }
 
@@ -54,11 +56,17 @@ export interface Bridge {
   pickFile(): boolean;
   addSticker(webp: Blob, animated: boolean): Promise<void>;
   /** Returns a mask image for the photo. Only its alpha channel matters. */
-  removeBackground(jpeg: Blob, onProgress: (message: string) => void): Promise<Blob>;
+  removeBackground(jpeg: Blob, onProgress: (message: string) => void): Promise<MaskResult>;
+}
+
+export interface MaskResult {
+  mask: Blob;
+  /** Time the model itself took, or null in browser mode. */
+  modelMs: number | null;
 }
 
 interface Pending {
-  resolve(mask: Blob): void;
+  resolve(result: MaskResult): void;
   reject(err: Error): void;
   onProgress(message: string): void;
 }
@@ -82,7 +90,10 @@ function nativeBridge(native: NativeBridge): Bridge {
           }
           fetch(result.url)
             .then((res) => res.blob())
-            .then(p.resolve, () => p.reject(new Error('Could not read the cutout.')));
+            .then(
+              (mask) => p.resolve({ mask, modelMs: result.ms ?? null }),
+              () => p.reject(new Error('Could not read the cutout.')),
+            );
         },
         onBackgroundProgress({ id, message }) {
           pending.get(id)?.onProgress(message);
@@ -146,9 +157,12 @@ function browserBridge(): Bridge {
       ctx.beginPath();
       ctx.ellipse(canvas.width / 2, canvas.height / 2, canvas.width * 0.3, canvas.height * 0.4, 0, 0, Math.PI * 2);
       ctx.fill();
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 150));
       return new Promise((resolve, reject) =>
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Fake cutout failed.'))), 'image/png'),
+        canvas.toBlob(
+          (b) => (b ? resolve({ mask: b, modelMs: null }) : reject(new Error('Fake cutout failed.'))),
+          'image/png',
+        ),
       );
     },
   };
