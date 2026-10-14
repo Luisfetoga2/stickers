@@ -117,6 +117,15 @@ Each phase ends with a new APK for you to test on your phone.
 | 3b | Background removal for video, with smoothing and erase strokes on every frame | Cut out a person in a short video, and measure the wait time. |
 | 4 | Your stickers grid with delete and Update WhatsApp, number boxes next to sliders, Back button support | Delete a sticker, then tap Update WhatsApp. |
 | 5 | Clean up: remove the share test page and the sample packs, and write the README | Final install over the old app. |
+| 6 | Post links: share or paste a TikTok, YouTube, Reddit, X, or Instagram link. yt-dlp downloads the video, updates itself once a day, and updates and retries after a failure | Share a TikTok and a YouTube Short to the app. |
+
+### Post links (Phase 6)
+
+- yt-dlp runs inside the app through the open-source youtubedl-android library, which bundles Python.
+- The app asks for a video-only H.264 format up to 720p, so it needs no ffmpeg.
+- The APK holds 64-bit ARM code only. This keeps the added size near 15 MB.
+- Picture posts are out of scope. A screenshot covers them.
+- The app does not log in to any site. Posts behind a login fail with advice to save the video in the other app.
 
 ## Open risks
 
@@ -124,4 +133,5 @@ Each phase ends with a new APK for you to test on your phone.
 - Video background removal can take too long on a phone. Phase 3b measures it before we tune it.
 - Video seeking in a WebView can be slow or a little off. If it is, the shell can extract frames with Android's `MediaMetadataRetriever` instead.
 - We do not know yet what WhatsApp does when the app deletes a sticker from a pack that you already added. Phase 4 tests this.
+- Sites change their pages, and yt-dlp downloads then fail until yt-dlp catches up. The app updates and retries, then reports the yt-dlp error.
 - This Mac has no Java or Android SDK. Android builds run only in GitHub Actions, so each Android fix needs a push and a short wait.

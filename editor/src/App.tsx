@@ -4,6 +4,7 @@ import { ClipEditor } from './ClipEditor';
 import { isVideo, mayBeAnimated, openAnimatedImage, openVideo, type Clip } from './clip';
 import { Cutout } from './cutout';
 import { kb } from './encode';
+import { firstUrl } from './links';
 import { PhotoEditor } from './PhotoEditor';
 import { StickersScreen } from './StickersScreen';
 import type { Status } from './types';
@@ -141,9 +142,9 @@ export function App() {
 
   const openLink = (e: React.FormEvent) => {
     e.preventDefault();
-    const url = link.trim();
-    if (!/^https?:\/\/\S+$/i.test(url)) {
-      setStatus({ kind: 'error', text: 'Paste the full link. It starts with https://' });
+    const url = firstUrl(link);
+    if (!url) {
+      setStatus({ kind: 'error', text: 'There is no link in that text. A link starts with https://' });
       return;
     }
     if (!bridge.openLink(url)) {
@@ -187,7 +188,7 @@ export function App() {
               </button>
               <form className="link-form" onSubmit={openLink}>
                 <input
-                  type="url"
+                  type="text"
                   inputMode="url"
                   autoComplete="off"
                   placeholder="Or paste a TikTok, YouTube, Reddit… link"

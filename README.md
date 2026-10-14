@@ -1,0 +1,98 @@
+# Sticker Bridge
+
+Sticker Bridge is a personal Android app that makes WhatsApp stickers with no white border and no ads.
+It turns a photo, a GIF, a video, or a post link into a sticker and adds it to WhatsApp.
+
+## Install
+
+1. Open https://github.com/Luisfetoga2/stickers/releases/latest/download/sticker-bridge.apk on the phone.
+2. Open the downloaded file.
+3. If Android blocks the install, allow installs from your browser, then go back.
+4. If Play Protect warns about an unknown app, tap "More details", then "Install anyway".
+
+A new APK installs over the old one and keeps your stickers.
+The app works on Android 11 or later, on phones with a 64-bit ARM processor.
+
+## Make a sticker
+
+1. Share a photo, GIF, video, or post to Sticker Bridge from another app.
+2. Or open Sticker Bridge and tap "Pick a file", or paste a post link into the link box.
+3. Edit the sticker.
+4. Tap "Add to WhatsApp".
+5. In WhatsApp, tap "Add".
+
+### Photos
+
+- Drag to move the photo. Pinch to zoom and rotate.
+- Tap "Remove background" to cut out the subject.
+- Use Erase and Restore to fix the edges.
+
+### GIFs and videos
+
+- Set Start and End. A sticker is 10 seconds at most.
+- Pick a frame rate. A lower frame rate gives a sharper sticker inside the 500 KB limit.
+- Tap Play to watch the sticker loop in the editor.
+- For a green screen video, tap "Green screen". If the wrong color is gone, tap "Pick color" and tap the screen in the video.
+- For any other video, tap "AI cutout". Trim and frame rate lock while the cutout is on.
+- Erase and Restore change every frame at once.
+
+### Post links
+
+The app downloads the video of a post from TikTok, YouTube, Reddit, X, Instagram, and many other sites.
+It uses yt-dlp, which updates itself once a day.
+When a download fails, the app updates yt-dlp and tries again.
+If the download still fails, the app shows the yt-dlp version and its error.
+
+Instagram often asks for a login, and the app does not log in.
+Picture posts are not supported, so take a screenshot and share it instead.
+
+### Your stickers
+
+The start screen has a "Your stickers" link after you make a sticker.
+Tap a sticker, then tap Delete.
+WhatsApp keeps the old sticker until you tap "Update WhatsApp".
+
+## How it works
+
+The app has two parts.
+
+| Part | Folder | Job |
+|---|---|---|
+| Android shell | `android/` | Receives shared files and links, removes backgrounds with ML Kit, downloads links with yt-dlp, stores the packs, and talks to WhatsApp. |
+| Editor | `editor/` | Crops, trims, keys out green, paints masks, and makes the WebP file. It runs in a WebView inside the app. |
+
+The app adds packs through the official WhatsApp sticker API, through a content provider that only WhatsApp can read.
+WhatsApp needs 3 to 30 stickers in a pack, so the app fills a new pack with copies of its first sticker.
+When a pack has 30 stickers, the next sticker starts a new pack.
+
+Photos, videos, and background removal stay on the phone.
+The app uses the internet only for post links, for yt-dlp updates, and for the one-time ML Kit model download.
+
+## Build
+
+GitHub Actions builds a signed APK on each push to `main` that changes `android/` or `editor/`.
+It publishes the APK as a release.
+
+To work on the editor on a computer, run these commands:
+
+```bash
+cd editor
+npm install
+npm run dev
+```
+
+In a desktop browser, the editor runs without the Android shell.
+"Add to WhatsApp" downloads the WebP file, and background removal uses a fake oval cutout.
+
+To run the tests, run `npm test` in `editor/`.
+The Java tests run in GitHub Actions with `gradle test`.
+
+## Signing key
+
+The release signing key is not in this repository.
+It is in the repository secrets `SIGNING_KEYSTORE_BASE64` and `SIGNING_PASSWORD`, and in a local backup.
+Keep the backup. Without the same key, a new APK cannot install over the old one.
+
+## Plan
+
+[PLAN.md](PLAN.md) has the phases and the decisions behind them.
