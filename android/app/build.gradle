@@ -57,5 +57,7 @@ android {
 
 dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1'
+    implementation 'com.google.android.gms:play-services-base:18.5.0'
     testImplementation 'junit:junit:4.13.2'
 }

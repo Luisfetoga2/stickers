@@ -97,3 +97,34 @@ export function draw(
   ctx.drawImage(image, -width / 2, -height / 2, width, height);
   ctx.restore();
 }
+
+/** A rectangle in source pixels. x and y are the top-left corner. */
+export interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The inverse of draw(): maps a sticker point to a source pixel. */
+export function toSource(t: Transform, p: Point, width: number, height: number): Point {
+  const dx = p.x - t.x;
+  const dy = p.y - t.y;
+  const cos = Math.cos(-t.rotation);
+  const sin = Math.sin(-t.rotation);
+  return {
+    x: (dx * cos - dy * sin) / t.scale + width / 2,
+    y: (dx * sin + dy * cos) / t.scale + height / 2,
+  };
+}
+
+/** Centers a part of the image, for example the subject after background removal. */
+export function fitBox(width: number, height: number, box: Box, mode: 'fit' | 'fill' = 'fit'): Transform {
+  const scale =
+    mode === 'fit'
+      ? Math.min(SIZE / box.width, SIZE / box.height) * 0.94
+      : Math.max(SIZE / box.width, SIZE / box.height);
+  const offsetX = box.x + box.width / 2 - width / 2;
+  const offsetY = box.y + box.height / 2 - height / 2;
+  return { x: SIZE / 2 - offsetX * scale, y: SIZE / 2 - offsetY * scale, scale: clampScale(scale), rotation: 0 };
+}

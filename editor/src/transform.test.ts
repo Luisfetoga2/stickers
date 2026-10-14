@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SIZE, centered, drag, fillScale, fitScale, normalizeAngle, pinch, zoomAround } from './transform';
+import { SIZE, centered, drag, fillScale, fitBox, fitScale, normalizeAngle, pinch, toSource, zoomAround } from './transform';
 
 const close = (a: number, b: number) => expect(a).toBeCloseTo(b, 6);
 
@@ -71,5 +71,37 @@ describe('normalizeAngle', () => {
   it('wraps angles into one turn', () => {
     close(normalizeAngle(3 * Math.PI), Math.PI);
     close(normalizeAngle(-3 * Math.PI / 2), Math.PI / 2);
+  });
+});
+
+describe('toSource', () => {
+  it('maps the image center back to the source center', () => {
+    const t = { x: 300, y: 200, scale: 2, rotation: 1 };
+    const p = toSource(t, { x: 300, y: 200 }, 100, 50);
+    close(p.x, 50);
+    close(p.y, 25);
+  });
+
+  it('undoes scale and rotation', () => {
+    // Rotated 90 degrees clockwise at scale 2: source (60, 25) sits 10 px right of center,
+    // so it lands 20 px below the image center.
+    const t = { x: 256, y: 256, scale: 2, rotation: Math.PI / 2 };
+    const p = toSource(t, { x: 256, y: 276 }, 100, 50);
+    close(p.x, 60);
+    close(p.y, 25);
+  });
+});
+
+describe('fitBox', () => {
+  it('fits the box with a small margin and centers it', () => {
+    const t = fitBox(1000, 1000, { x: 0, y: 0, width: 500, height: 250 });
+    close(t.scale, (512 / 500) * 0.94);
+    // The box center (250, 125) is 250 px left and 375 px above the image center.
+    close(t.x, 256 + 250 * t.scale);
+    close(t.y, 256 + 375 * t.scale);
+  });
+
+  it('fills the box with no margin', () => {
+    expect(fitBox(1000, 1000, { x: 0, y: 0, width: 500, height: 250 }, 'fill').scale).toBeCloseTo(512 / 250, 6);
   });
 });

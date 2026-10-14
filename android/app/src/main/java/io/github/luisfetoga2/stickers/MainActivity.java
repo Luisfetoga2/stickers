@@ -6,6 +6,8 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.net.Uri;
@@ -56,6 +58,8 @@ public class MainActivity extends Activity {
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private File sharedDir;
+    private File workDir;
+    private BackgroundRemover remover;
     /** MIME type of the file in sharedDir. Read on a WebView thread. */
     private volatile String sharedMime = "application/octet-stream";
 
@@ -73,6 +77,8 @@ public class MainActivity extends Activity {
             getActionBar().hide();
         }
         sharedDir = new File(getCacheDir(), "shared");
+        workDir = new File(getCacheDir(), "work");
+        remover = new BackgroundRemover(this, io);
 
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
@@ -103,6 +109,7 @@ public class MainActivity extends Activity {
                 .setDomain(HOST)
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .addPathHandler("/shared/", this::serveSharedFile)
+                .addPathHandler("/work/", this::serveWorkFile)
                 .build();
 
         webView.setWebViewClient(new WebViewClient() {
@@ -149,6 +156,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        remover.close();
         io.shutdown();
         webView.destroy();
         super.onDestroy();
@@ -226,6 +234,58 @@ public class MainActivity extends Activity {
             return new WebResourceResponse(sharedMime, null, new FileInputStream(file));
         } catch (IOException e) {
             return null;
+        }
+    }
+
+    /** Serves masks from background removal. */
+    private WebResourceResponse serveWorkFile(String path) {
+        if (!path.matches("mask[0-9]+\\.png")) {
+            return null;
+        }
+        File file = new File(workDir, path);
+        if (!file.isFile()) {
+            return null;
+        }
+        try {
+            return new WebResourceResponse("image/png", null, new FileInputStream(file));
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private String saveMask(Bitmap mask) throws IOException {
+        File[] old = workDir.listFiles();
+        if (old != null) {
+            for (File f : old) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
+        if (!workDir.isDirectory() && !workDir.mkdirs()) {
+            throw new IOException("Could not create the cache folder.");
+        }
+        String name = "mask" + System.currentTimeMillis() + ".png";
+        try (OutputStream out = new FileOutputStream(new File(workDir, name))) {
+            if (!mask.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                throw new IOException("Could not encode the mask.");
+            }
+        }
+        return name;
+    }
+
+    private void sendBackgroundResult(String id, boolean ok, String key, String value) {
+        try {
+            callEditor("onBackgroundResult", new JSONObject().put("id", id).put("ok", ok).put(key, value).toString());
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private void sendBackgroundProgress(String id, String message) {
+        try {
+            callEditor("onBackgroundProgress", new JSONObject().put("id", id).put("message", message).toString());
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
         }
     }
 
@@ -326,6 +386,46 @@ public class MainActivity extends Activity {
                 } catch (IOException | IllegalArgumentException e) {
                     main.post(() -> sendAddResult(false, "Could not save the sticker: " + e.getMessage()));
                 }
+            });
+        }
+
+        @JavascriptInterface
+        public void removeBackground(String id, String jpegBase64) {
+            io.execute(() -> {
+                Bitmap photo = null;
+                try {
+                    byte[] jpeg = Base64.getDecoder().decode(jpegBase64);
+                    photo = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
+                } catch (IllegalArgumentException ignored) {
+                    // Handled below as an unreadable photo.
+                }
+                if (photo == null) {
+                    main.post(() -> sendBackgroundResult(id, false, "message", "Could not read the photo."));
+                    return;
+                }
+                Bitmap input = photo;
+                main.post(() -> remover.remove(input, new BackgroundRemover.Callback() {
+                    @Override
+                    public void onProgress(String message) {
+                        main.post(() -> sendBackgroundProgress(id, message));
+                    }
+
+                    @Override
+                    public void onMask(Bitmap mask) {
+                        // Runs on the io thread.
+                        try {
+                            String url = "https://" + HOST + "/work/" + saveMask(mask);
+                            main.post(() -> sendBackgroundResult(id, true, "url", url));
+                        } catch (IOException e) {
+                            main.post(() -> sendBackgroundResult(id, false, "message", e.getMessage()));
+                        }
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        main.post(() -> sendBackgroundResult(id, false, "message", message));
+                    }
+                }));
             });
         }
     }

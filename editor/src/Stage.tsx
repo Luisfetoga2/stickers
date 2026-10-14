@@ -1,30 +1,60 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SIZE, drag, draw, pinch, zoomAround, type Point, type Transform } from './transform';
+
+export type Tool = 'move' | 'erase' | 'restore';
 
 interface Props {
   image: CanvasImageSource;
   width: number;
   height: number;
+  /** Changes when the image pixels change, so the stage redraws. */
+  version: number;
   transform: Transform;
   onChange(t: Transform): void;
+  tool: Tool;
+  /** Brush radius in sticker pixels. */
+  brushSize: number;
+  onBrushStart(p: Point): void;
+  onBrushMove(from: Point, to: Point): void;
 }
 
-/** The 512x512 sticker preview. One finger moves the image. Two fingers zoom and rotate it. */
-export function Stage({ image, width, height, transform, onChange }: Props) {
+type Gesture =
+  | { kind: 'brush'; last: Point }
+  | { kind: 'move'; start: Transform; points: Point[] };
+
+/**
+ * The 512x512 sticker preview.
+ * Move tool: one finger moves the image. Brush tools: one finger paints.
+ * Two fingers always move, zoom, and rotate.
+ */
+export function Stage(props: Props) {
+  const { image, width, height, version, transform, onChange, tool, brushSize } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointers = useRef(new Map<number, Point>());
-  const gesture = useRef<{ start: Transform; points: Point[] } | null>(null);
-  const latest = useRef(transform);
-  latest.current = transform;
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  const gesture = useRef<Gesture | null>(null);
+  const [cursor, setCursor] = useState<Point | null>(null);
+
+  const latest = useRef(props);
+  latest.current = props;
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, SIZE, SIZE);
     draw(ctx, image, width, height, transform);
-  }, [image, width, height, transform]);
+    if (cursor && tool !== 'move') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cursor.x, cursor.y, brushSize, 0, Math.PI * 2);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.stroke();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.stroke();
+      ctx.restore();
+    }
+  }, [image, width, height, version, transform, cursor, tool, brushSize]);
 
   // React wheel listeners are passive, so the page would scroll too. Desktop testing only.
   useEffect(() => {
@@ -32,7 +62,8 @@ export function Stage({ image, width, height, transform, onChange }: Props) {
     if (!canvas) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      onChangeRef.current(zoomAround(latest.current, Math.exp(-e.deltaY * 0.0015), toSticker(canvas, e)));
+      const p = latest.current;
+      p.onChange(zoomAround(p.transform, Math.exp(-e.deltaY * 0.0015), toSticker(canvas, e)));
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
@@ -40,30 +71,53 @@ export function Stage({ image, width, height, transform, onChange }: Props) {
 
   const firstTwo = () => [...pointers.current.values()].slice(0, 2);
 
-  const restart = () => {
+  const startMove = () => {
     const points = firstTwo();
-    gesture.current = points.length ? { start: latest.current, points } : null;
+    gesture.current = points.length ? { kind: 'move', start: latest.current.transform, points } : null;
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    pointers.current.set(e.pointerId, toSticker(e.currentTarget, e));
-    restart();
+    const p = toSticker(e.currentTarget, e);
+    pointers.current.set(e.pointerId, p);
+    if (pointers.current.size === 1 && tool !== 'move') {
+      gesture.current = { kind: 'brush', last: p };
+      setCursor(p);
+      props.onBrushStart(p);
+    } else {
+      // A second finger ends painting and starts a two-finger move.
+      setCursor(null);
+      startMove();
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pointers.current.has(e.pointerId)) return;
-    pointers.current.set(e.pointerId, toSticker(e.currentTarget, e));
+    const p = toSticker(e.currentTarget, e);
+    pointers.current.set(e.pointerId, p);
     const g = gesture.current;
+    if (!g) return;
+    if (g.kind === 'brush') {
+      props.onBrushMove(g.last, p);
+      g.last = p;
+      setCursor(p);
+      return;
+    }
     const now = firstTwo();
-    if (!g || g.points.length !== now.length) return;
+    if (g.points.length !== now.length) return;
     if (now.length === 1) onChange(drag(g.start, g.points[0], now[0]));
     else onChange(pinch(g.start, g.points[0], g.points[1], now[0], now[1]));
   };
 
   const onPointerEnd = (e: React.PointerEvent<HTMLCanvasElement>) => {
     pointers.current.delete(e.pointerId);
-    restart();
+    if (pointers.current.size === 0) {
+      gesture.current = null;
+      setCursor(null);
+    } else {
+      // After two fingers, the last finger moves the image instead of painting by accident.
+      startMove();
+    }
   };
 
   return (
@@ -72,6 +126,7 @@ export function Stage({ image, width, height, transform, onChange }: Props) {
         ref={canvasRef}
         width={SIZE}
         height={SIZE}
+        className={tool === 'move' ? 'tool-move' : 'tool-brush'}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerEnd}
