@@ -53,6 +53,7 @@ export async function makeAnimated(
   end: number,
   fps: number,
   onProgress: (message: string) => void,
+  signal?: AbortSignal,
 ): Promise<Animated> {
   const canvas = document.createElement('canvas');
   canvas.width = SIZE;
@@ -67,6 +68,7 @@ export async function makeAnimated(
       const frames: ImageBitmap[] = [];
       try {
         for (let i = 0; i < times.length; i++) {
+          signal?.throwIfAborted();
           onProgress(`Reading frame ${i + 1} of ${times.length}…`);
           const source = await clip.frameAt(times[i]);
           ctx.clearRect(0, 0, SIZE, SIZE);
@@ -81,7 +83,10 @@ export async function makeAnimated(
         const sampleSizes = new Map<number, number>();
         for (const q of QUALITIES) {
           let total = 0;
-          for (const f of sample) total += (await encodeFrame(ctx, canvas, f, q)).length;
+          for (const f of sample) {
+            signal?.throwIfAborted();
+            total += (await encodeFrame(ctx, canvas, f, q)).length;
+          }
           sampleSizes.set(q, total);
         }
         const firstTry = pickQuality(sampleSizes, sample.length, frames.length, ANIMATED_LIMIT);
@@ -90,6 +95,7 @@ export async function makeAnimated(
         for (const q of QUALITIES.slice(QUALITIES.indexOf(firstTry))) {
           const encoded = [];
           for (let i = 0; i < frames.length; i++) {
+            signal?.throwIfAborted();
             onProgress(`Encoding frame ${i + 1} of ${frames.length}…`);
             encoded.push({ webp: await encodeFrame(ctx, canvas, frames[i], q), durationMs: durations[i] });
           }

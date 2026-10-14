@@ -22,11 +22,11 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async (blob: Blob, mime: string) => {
+  const load = useCallback(async (blob: Blob, mime: string, name = '') => {
     setStatus({ kind: 'info', text: 'Opening…' });
     try {
       let next: Media;
-      const clip = isVideo(mime)
+      const clip = isVideo(mime, name)
         ? await openVideo(blob)
         : mayBeAnimated(mime)
           ? await openAnimatedImage(blob, mime)
@@ -51,6 +51,9 @@ export function App() {
 
   useEffect(() => {
     bridge.connect({
+      onOpening() {
+        setStatus({ kind: 'info', text: 'Opening…' });
+      },
       async onSharedFile(file) {
         const res = await fetch(file.url);
         const blob = await res.blob();
@@ -63,12 +66,14 @@ export function App() {
     });
   }, [load]);
 
-  const pick = () => fileInput.current?.click();
+  const pick = () => {
+    if (!bridge.pickFile()) fileInput.current?.click();
+  };
 
   const onPicked = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (file) void load(file, file.type);
+    if (file) void load(file, file.type, file.name);
   };
 
   const onAdd = async (webp: Blob, animated: boolean) => {

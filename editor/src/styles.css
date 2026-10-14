@@ -227,29 +227,17 @@ button:disabled {
   margin-top: -4px;
 }
 
-.result {
-  display: flex;
+.playbar {
   align-items: center;
-  gap: 12px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 10px;
+  flex-wrap: nowrap;
 }
 
-.result img {
-  width: 96px;
-  height: 96px;
-  flex: none;
-  border-radius: 10px;
-  background-color: var(--check-b);
-  background-image:
-    linear-gradient(45deg, var(--check-a) 25%, transparent 25%),
-    linear-gradient(-45deg, var(--check-a) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, var(--check-a) 75%),
-    linear-gradient(-45deg, transparent 75%, var(--check-a) 75%);
-  background-size: 12px 12px;
-  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+.playbar button {
+  min-width: 84px;
+}
+
+.playbar .hint {
+  font-variant-numeric: tabular-nums;
 }
 
 input[type='range']:disabled {

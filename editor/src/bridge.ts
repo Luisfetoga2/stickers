@@ -11,6 +11,8 @@ export interface AddResult {
 }
 
 export interface AppEvents {
+  /** The shell started copying a shared or picked file. onSharedFile follows. */
+  onOpening(): void;
   onSharedFile(file: SharedFile): void;
   onAddResult(result: AddResult): void;
 }
@@ -32,6 +34,7 @@ interface ShellEvents extends AppEvents {
 /** Methods the Android shell exposes with addJavascriptInterface. Only strings and booleans cross over. */
 interface NativeBridge {
   ready(): void;
+  pickFile(): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -47,6 +50,8 @@ export interface Bridge {
   /** False in a desktop browser, where stickers download instead. */
   readonly isNative: boolean;
   connect(events: AppEvents): void;
+  /** Opens the Android photo and video picker. Returns false when the editor must use its own file input. */
+  pickFile(): boolean;
   addSticker(webp: Blob, animated: boolean): Promise<void>;
   /** Returns a mask image for the photo. Only its alpha channel matters. */
   removeBackground(jpeg: Blob, onProgress: (message: string) => void): Promise<Blob>;
@@ -85,6 +90,10 @@ function nativeBridge(native: NativeBridge): Bridge {
       };
       native.ready();
     },
+    pickFile() {
+      native.pickFile();
+      return true;
+    },
     async addSticker(webp, animated) {
       native.addSticker(await blobToBase64(webp), animated);
     },
@@ -111,6 +120,9 @@ function browserBridge(): Bridge {
         onBackgroundResult() {},
         onBackgroundProgress() {},
       };
+    },
+    pickFile() {
+      return false;
     },
     async addSticker(webp) {
       const url = URL.createObjectURL(webp);

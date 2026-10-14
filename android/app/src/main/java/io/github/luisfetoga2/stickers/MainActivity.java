@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.view.WindowInsets;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -51,6 +52,7 @@ public class MainActivity extends Activity {
     private static final String EDITOR_URL = "https://" + HOST + "/assets/editor/index.html";
     private static final int REQUEST_ADD_PACK = 200;
     private static final int REQUEST_PICK_FILE = 201;
+    private static final int REQUEST_PICK_MEDIA = 202;
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -162,7 +164,7 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    /** Copies a shared photo into the cache, then hands its URL to the editor. */
+    /** Opens a file that another app shared with Sticker Bridge. */
     private void handleShare(Intent intent) {
         if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) {
             return;
@@ -170,10 +172,37 @@ public class MainActivity extends Activity {
         Uri uri = Build.VERSION.SDK_INT >= 33
                 ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
                 : legacyStream(intent);
-        if (uri == null) {
-            return;
+        if (uri != null) {
+            openIncoming(uri, intent.getType());
         }
-        String mime = intent.getType() != null ? intent.getType() : getContentResolver().getType(uri);
+    }
+
+    /** The Android photo picker shows photos, GIFs, and videos, and always reports the real file type. */
+    private void pickMedia() {
+        Intent intent;
+        if (Build.VERSION.SDK_INT >= 33) {
+            intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+        } else {
+            intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
+        }
+        try {
+            startActivityForResult(intent, REQUEST_PICK_MEDIA);
+        } catch (ActivityNotFoundException e) {
+            sendAddResult(false, "This phone has no photo picker: " + e.getMessage());
+        }
+    }
+
+    /** Copies a shared or picked file into the cache, then hands its URL to the editor. */
+    private void openIncoming(Uri uri, String typeHint) {
+        // The content provider knows the exact type. A share intent can carry a vague one, such as image/*.
+        String resolved = getContentResolver().getType(uri);
+        String mime = resolved != null ? resolved : typeHint;
+        if (editorReady) {
+            callEditor("onOpening", "{}");
+        }
         io.execute(() -> {
             try {
                 String name = copyShared(uri);
@@ -332,6 +361,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_PICK_MEDIA) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                openIncoming(data.getData(), null);
+            }
+            return;
+        }
         if (requestCode == REQUEST_PICK_FILE) {
             if (fileCallback != null) {
                 fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
@@ -367,6 +402,11 @@ public class MainActivity extends Activity {
 
     /** Methods the editor calls. They run on a WebView thread, so they hop to the main thread or the io thread. */
     private final class Bridge {
+
+        @JavascriptInterface
+        public void pickFile() {
+            main.post(MainActivity.this::pickMedia);
+        }
 
         @JavascriptInterface
         public void ready() {
