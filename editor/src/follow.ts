@@ -32,13 +32,18 @@ export function fillGaps(centers: Array<Point | null>, fallback: Point): Point[]
   return centers.map((c) => (last = c ?? last));
 }
 
-/** A moving average, so the sticker does not shake with every small change in the cutout. */
+/**
+ * A moving average, so the sticker does not shake with every small change in the cutout.
+ * Near the first and last frames the window shrinks on both sides. A one-sided window would lag behind
+ * a subject that moves steadily.
+ */
 export function smoothPath(points: Point[], radius = SMOOTHING_RADIUS): Point[] {
   return points.map((_, i) => {
+    const r = Math.min(radius, i, points.length - 1 - i);
     let x = 0;
     let y = 0;
     let n = 0;
-    for (let j = Math.max(0, i - radius); j <= Math.min(points.length - 1, i + radius); j++) {
+    for (let j = i - r; j <= i + r; j++) {
       x += points[j].x;
       y += points[j].y;
       n++;

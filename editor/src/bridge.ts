@@ -1,3 +1,4 @@
+import { DEFAULT_CHROMA, chromaKey, detectKeyColor } from './chroma';
 import { blobToBase64 } from './encode';
 
 export interface SharedFile {
@@ -254,19 +255,18 @@ function browserBridge(): Bridge {
     },
     openUpdate() {},
     async removeBackground(jpeg, onProgress) {
-      // A fake cutout: keeps an ellipse in the middle. The real one runs in the Android app.
+      // A fake cutout for testing: removes the frame's border color, like a green screen. The real one runs in the app.
       onProgress('Browser mode: making a fake cutout…');
       const image = await createImageBitmap(jpeg);
       const canvas = document.createElement('canvas');
       canvas.width = image.width;
       canvas.height = image.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.drawImage(image, 0, 0);
       image.close();
-      const ctx = canvas.getContext('2d')!;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.ellipse(canvas.width / 2, canvas.height / 2, canvas.width * 0.3, canvas.height * 0.4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      await new Promise((r) => setTimeout(r, 150));
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      chromaKey(pixels.data, { ...DEFAULT_CHROMA, key: detectKeyColor(pixels.data, canvas.width, canvas.height) });
+      ctx.putImageData(pixels, 0, 0);
       return new Promise((resolve, reject) =>
         canvas.toBlob(
           (b) => (b ? resolve({ mask: b, modelMs: null }) : reject(new Error('Fake cutout failed.'))),

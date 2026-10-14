@@ -34,7 +34,11 @@ describe('smoothPath', () => {
   it('averages each point with its neighbors', () => {
     const path = smoothPath([{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 0, y: 0 }], 1);
     expect(path[1]).toEqual({ x: 1, y: 0 });
-    expect(path[0]).toEqual({ x: 1.5, y: 0 });
+  });
+
+  it('keeps steady motion exact, also at the ends', () => {
+    const line = Array.from({ length: 10 }, (_, i) => ({ x: i * 5, y: 0 }));
+    expect(smoothPath(line, 3)).toEqual(line);
   });
 });
 
@@ -45,6 +49,7 @@ describe('followOffsets', () => {
     // The subject jumps from x 10 to x 30, so the first frames move right and the last frames move left.
     expect(offsets[0].x).toBeCloseTo(10, 5);
     expect(offsets[19].x).toBeCloseTo(-10, 5);
+    expect(offsets[0].x).toBeGreaterThan(offsets[9].x);
     expect(offsets.every((o) => Math.abs(o.y) < 1e-9)).toBe(true);
   });
 

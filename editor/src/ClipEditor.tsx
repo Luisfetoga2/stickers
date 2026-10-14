@@ -9,7 +9,7 @@ import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { followOffsets } from './follow';
-import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toGray } from './loop';
+import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
 import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
 import type { EditorProps } from './types';
 
@@ -484,7 +484,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           ctx.clearRect(0, 0, thumb.width, thumb.height);
           // With a green screen, compare the keyed frames, so the subject's shape counts and the screen does not.
           ctx.drawImage(matte === 'chroma' ? processFrame(frame, 0) : frame, 0, 0, thumb.width, thumb.height);
-          thumbs.push(toGray(ctx.getImageData(0, 0, thumb.width, thumb.height).data));
+          thumbs.push(toThumb(ctx.getImageData(0, 0, thumb.width, thumb.height).data));
         },
         controller.signal,
       );

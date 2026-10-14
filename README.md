@@ -25,22 +25,27 @@ The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 
 ### Photos
 
-- Drag to move the photo. Pinch to zoom and rotate.
+- Drag to move the photo. Pinch to zoom and rotate. Tap Flip to mirror it.
 - Tap "Remove background" to cut out the subject.
 - Use Erase and Restore to fix the edges.
 
 ### GIFs and videos
 
 - Set Start and End. A sticker is 10 seconds at most.
+- Tap "Find loop" to move Start and End to two frames that match, so the sticker loops without a jump.
 - Pick a frame rate. A lower frame rate gives a sharper sticker inside the 500 KB limit.
 - Tap Play to watch the sticker loop in the editor.
 - For a green screen video, tap "Green screen". If the wrong color is gone, tap "Pick color" and tap the screen in the video.
 - For any other video, tap "AI cutout". Trim and frame rate lock while the cutout is on.
 - Erase and Restore change every frame at once.
+- After an AI cutout, turn on "Follow the subject" to keep the subject in one place while it moves.
+
+Animated stickers store only what changes between frames. The smaller file leaves room for higher quality.
 
 ### Post links
 
 The app downloads the video of a post from TikTok, YouTube, Reddit, X, Instagram, and many other sites.
+If you copy a link and then open the app, the start screen offers to open it.
 It uses yt-dlp, which updates itself once a day.
 When a download fails, the app updates yt-dlp and tries again.
 If the download still fails, the app shows the yt-dlp version and its error.
