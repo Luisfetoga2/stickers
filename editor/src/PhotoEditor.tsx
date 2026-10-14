@@ -3,6 +3,7 @@ import { bridge } from './bridge';
 import type { Cutout } from './cutout';
 import { STATIC_LIMIT, fitToLimit, renderSticker, webpEncoder } from './encode';
 import { MoveControls } from './MoveControls';
+import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { centered, fitBox, toSource, type Point, type Transform } from './transform';
 import type { EditorProps } from './types';
@@ -150,17 +151,7 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
           />
         ) : (
           <>
-            <label>
-              <span>Brush {brushSize}</span>
-              <input
-                type="range"
-                min={4}
-                max={80}
-                step={1}
-                value={brushSize}
-                onChange={(e) => setBrushSize(Number(e.target.value))}
-              />
-            </label>
+            <SliderField label="Brush" value={brushSize} min={4} max={80} decimals={0} onChange={setBrushSize} />
             <div className="row">
               <button className="ghost" onClick={resetCutout} disabled={!cutout.edited || locked}>
                 Bring back the whole photo

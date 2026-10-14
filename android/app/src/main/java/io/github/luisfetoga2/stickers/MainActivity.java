@@ -29,6 +29,7 @@ import android.widget.FrameLayout;
 
 import androidx.webkit.WebViewAssetLoader;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -38,7 +39,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -70,6 +74,11 @@ public class MainActivity extends Activity {
     /** A shared file copied into the cache, waiting for the editor. */
     private JSONObject pendingShare;
     private String pendingPackName;
+    private String pendingPackId;
+    /** Packs still waiting to be sent to WhatsApp after the user tapped Update WhatsApp. */
+    private final ArrayDeque<String> updateQueue = new ArrayDeque<>();
+    private boolean updating;
+    private String updateNote = "";
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -112,6 +121,7 @@ public class MainActivity extends Activity {
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .addPathHandler("/shared/", this::serveSharedFile)
                 .addPathHandler("/work/", this::serveWorkFile)
+                .addPathHandler("/stickers/", this::serveStickerFile)
                 .build();
 
         webView.setWebViewClient(new WebViewClient() {
@@ -154,6 +164,17 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleShare(intent);
+    }
+
+    /** The editor uses browser history for its screens, so Back returns to the start screen before it leaves. */
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack();
+        } else {
+            super.onBackPressed();
+        }
     }
 
     @Override
@@ -364,6 +385,7 @@ public class MainActivity extends Activity {
         intent.putExtra("sticker_pack_authority", BuildConfig.CONTENT_PROVIDER_AUTHORITY);
         intent.putExtra("sticker_pack_name", pack.name);
         pendingPackName = pack.name;
+        pendingPackId = pack.id;
         try {
             startActivityForResult(intent, REQUEST_ADD_PACK);
         } catch (ActivityNotFoundException e) {
@@ -391,13 +413,90 @@ public class MainActivity extends Activity {
             return;
         }
         if (resultCode == RESULT_OK) {
-            sendAddResult(true, "Added to \"" + pendingPackName + "\" in WhatsApp.");
+            String packId = pendingPackId;
+            io.execute(() -> {
+                try {
+                    StickerStore.markUpdated(this, packId);
+                } catch (IOException ignored) {
+                    // The pack stays marked, so the next update sends it again.
+                }
+            });
+            if (updating) {
+                openNextUpdate();
+            } else {
+                sendAddResult(true, "Added to \"" + pendingPackName + "\" in WhatsApp.");
+            }
             return;
         }
         String error = data == null ? null : data.getStringExtra("validation_error");
+        if (updating) {
+            updating = false;
+            updateQueue.clear();
+            sendAddResult(false, error != null
+                    ? "WhatsApp rejected the pack: " + error
+                    : "WhatsApp closed before you tapped Add. Tap Update WhatsApp to try again.");
+            return;
+        }
         sendAddResult(false, error != null
                 ? "WhatsApp rejected the pack: " + error
                 : "The sticker is saved, but you closed WhatsApp before you tapped Add. Add the next sticker to try again.");
+    }
+
+    /** Sends every changed pack to WhatsApp, one Add screen at a time. */
+    private void startUpdate() {
+        updateQueue.clear();
+        List<String> emptied = new ArrayList<>();
+        for (StickerStore.Pack pack : StickerStore.allPacks(this)) {
+            if (!pack.needsUpdate) {
+                continue;
+            }
+            if (pack.stickers.isEmpty()) {
+                // WhatsApp rejects a pack with no stickers, so the user removes it there.
+                emptied.add(pack.name);
+                io.execute(() -> {
+                    try {
+                        StickerStore.markUpdated(this, pack.id);
+                    } catch (IOException ignored) {
+                        // Shown again next time, which is harmless.
+                    }
+                });
+            } else {
+                updateQueue.add(pack.id);
+            }
+        }
+        updateNote = emptied.isEmpty()
+                ? ""
+                : " \"" + String.join("\", \"", emptied) + "\" has no stickers left, so remove it in WhatsApp:"
+                + " open the sticker tray, tap the settings icon, then My stickers.";
+        updating = true;
+        openNextUpdate();
+    }
+
+    private void openNextUpdate() {
+        while (!updateQueue.isEmpty()) {
+            StickerStore.Pack pack = StickerStore.find(this, updateQueue.poll());
+            if (pack != null && !pack.stickers.isEmpty()) {
+                openWhatsApp(pack);
+                return;
+            }
+        }
+        updating = false;
+        sendAddResult(true, ("WhatsApp is up to date." + updateNote).trim());
+    }
+
+    /** Serves saved stickers to the Your stickers screen, as /stickers/PACK_ID/FILE. */
+    private WebResourceResponse serveStickerFile(String path) {
+        String[] parts = path.split("/");
+        if (parts.length != 2 || !PackPlanner.isSafeFileName(parts[1])
+                || !StickerStore.stickers(this, parts[0]).contains(parts[1])) {
+            return null;
+        }
+        File file = new File(StickerStore.packDir(this, parts[0]), parts[1]);
+        try {
+            return new WebResourceResponse("image/webp", null, new FileInputStream(file));
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /** Prefers regular WhatsApp, then WhatsApp Business. */
@@ -415,6 +514,46 @@ public class MainActivity extends Activity {
 
     /** Methods the editor calls. They run on a WebView thread, so they hop to the main thread or the io thread. */
     private final class Bridge {
+
+        /** Every saved sticker, grouped by pack, as JSON. */
+        @JavascriptInterface
+        public String listStickers() {
+            try {
+                JSONArray packs = new JSONArray();
+                for (StickerStore.Pack pack : StickerStore.allPacks(MainActivity.this)) {
+                    JSONArray stickers = new JSONArray();
+                    for (String file : pack.stickers) {
+                        stickers.put(new JSONObject()
+                                .put("file", file)
+                                .put("url", "https://" + HOST + "/stickers/" + pack.id + "/" + file));
+                    }
+                    packs.put(new JSONObject()
+                            .put("id", pack.id)
+                            .put("name", pack.name)
+                            .put("animated", pack.animated)
+                            .put("needsUpdate", pack.needsUpdate)
+                            .put("stickers", stickers));
+                }
+                return new JSONObject().put("packs", packs).toString();
+            } catch (JSONException e) {
+                return "{\"packs\":[]}";
+            }
+        }
+
+        @JavascriptInterface
+        public String deleteSticker(String packId, String file) {
+            try {
+                StickerStore.deleteSticker(MainActivity.this, packId, file);
+                return new JSONObject().put("ok", true).toString();
+            } catch (IOException | JSONException e) {
+                return "{\"ok\":false,\"message\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+            }
+        }
+
+        @JavascriptInterface
+        public void updateWhatsApp() {
+            main.post(MainActivity.this::startUpdate);
+        }
 
         @JavascriptInterface
         public void pickFile() {

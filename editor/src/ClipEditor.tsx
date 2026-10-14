@@ -6,6 +6,7 @@ import type { Clip } from './clip';
 import { ClipCutout, workSize, type FrameSource } from './clipCutout';
 import { Mask, ctx2d, newCanvas } from './mask';
 import { MoveControls } from './MoveControls';
+import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { centered, toSource, type Point, type Transform } from './transform';
 import type { EditorProps } from './types';
@@ -473,28 +474,22 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
               {tool === 'pick' ? 'Tap the video' : 'Pick color'}
             </button>
           </div>
-          <label>
-            <span>Tolerance</span>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={chroma.tolerance}
-              onChange={(e) => setChroma({ ...chroma, tolerance: Number(e.target.value) })}
-            />
-          </label>
-          <label>
-            <span>Softness</span>
-            <input
-              type="range"
-              min={0}
-              max={0.6}
-              step={0.01}
-              value={chroma.softness}
-              onChange={(e) => setChroma({ ...chroma, softness: Number(e.target.value) })}
-            />
-          </label>
+          <SliderField
+            label="Tolerance"
+            value={chroma.tolerance}
+            min={0}
+            max={1}
+            decimals={2}
+            onChange={(v) => setChroma({ ...chroma, tolerance: v })}
+          />
+          <SliderField
+            label="Softness"
+            value={chroma.softness}
+            min={0}
+            max={0.6}
+            decimals={2}
+            onChange={(v) => setChroma({ ...chroma, softness: v })}
+          />
           <label className="check">
             <input
               type="checkbox"
@@ -541,30 +536,24 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       )}
 
       <section className="controls">
-        <label>
-          <span>Start {start.toFixed(2)} s</span>
-          <input
-            type="range"
-            min={0}
-            max={clip.duration}
-            step={0.01}
-            value={start}
-            disabled={locked || matte === 'ai'}
-            onChange={(e) => changeStart(Number(e.target.value))}
-          />
-        </label>
-        <label>
-          <span>End {end.toFixed(2)} s</span>
-          <input
-            type="range"
-            min={0}
-            max={clip.duration}
-            step={0.01}
-            value={end}
-            disabled={locked || matte === 'ai'}
-            onChange={(e) => changeEnd(Number(e.target.value))}
-          />
-        </label>
+        <SliderField
+          label="Start s"
+          value={start}
+          min={0}
+          max={clip.duration}
+          decimals={2}
+          disabled={locked || matte === 'ai'}
+          onChange={changeStart}
+        />
+        <SliderField
+          label="End s"
+          value={end}
+          min={0}
+          max={clip.duration}
+          decimals={2}
+          disabled={locked || matte === 'ai'}
+          onChange={changeEnd}
+        />
         <p className="hint">
           {matte === 'ai'
             ? 'Trim and frame rate are locked while the AI cutout is on. Bring the background back to change them.'
@@ -588,17 +577,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
       <section className="controls">
         {brushing ? (
-          <label>
-            <span>Brush {brushSize}</span>
-            <input
-              type="range"
-              min={4}
-              max={80}
-              step={1}
-              value={brushSize}
-              onChange={(e) => setBrushSize(Number(e.target.value))}
-            />
-          </label>
+          <SliderField label="Brush" value={brushSize} min={4} max={80} decimals={0} onChange={setBrushSize} />
         ) : (
           <MoveControls
             transform={transform}

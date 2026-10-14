@@ -5,6 +5,7 @@ import { isVideo, mayBeAnimated, openAnimatedImage, openVideo, type Clip } from 
 import { Cutout } from './cutout';
 import { kb } from './encode';
 import { PhotoEditor } from './PhotoEditor';
+import { StickersScreen } from './StickersScreen';
 import type { Status } from './types';
 
 type Media = { kind: 'photo'; cutout: Cutout; id: number } | { kind: 'clip'; clip: Clip; id: number };
@@ -16,8 +17,20 @@ function dispose(media: Media | null) {
   if (media?.kind === 'clip') media.clip.dispose();
 }
 
+/**
+ * Screens are browser history entries, so the phone's Back button returns to the start screen:
+ * the start screen has no entry, and the editor or Your stickers adds one.
+ */
+function enterScreen(screen: 'edit' | 'stickers') {
+  if (history.state?.screen) history.replaceState({ screen }, '');
+  else history.pushState({ screen }, '');
+}
+
 export function App() {
   const [media, setMedia] = useState<Media | null>(null);
+  const [showStickers, setShowStickers] = useState(false);
+  const [stickerCount, setStickerCount] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -42,6 +55,8 @@ export function App() {
         dispose(prev);
         return next;
       });
+      setShowStickers(false);
+      enterScreen('edit');
       setStatus(null);
     } catch (err) {
       const text = err instanceof Error && err.message ? err.message : 'Could not open this file.';
@@ -61,10 +76,35 @@ export function App() {
       },
       onAddResult(result) {
         setBusy(false);
+        setRefreshKey((k) => k + 1);
         setStatus({ kind: result.ok ? 'ok' : 'error', text: result.message });
       },
     });
   }, [load]);
+
+  // Back from the editor or Your stickers lands on the start screen.
+  useEffect(() => {
+    const onPop = () => {
+      setShowStickers(false);
+      setMedia((prev) => {
+        dispose(prev);
+        return null;
+      });
+      setStatus(null);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // The start screen shows how many stickers exist, as the way into Your stickers.
+  const onStart = !media && !showStickers;
+  useEffect(() => {
+    if (!onStart) return;
+    bridge
+      .listStickers()
+      .then((library) => setStickerCount(library.stickers.length))
+      .catch(() => setStickerCount(0));
+  }, [onStart, refreshKey]);
 
   const pick = () => {
     if (!bridge.pickFile()) fileInput.current?.click();
@@ -87,31 +127,48 @@ export function App() {
     }
   };
 
+  const openStickers = () => {
+    setStatus(null);
+    enterScreen('stickers');
+    setShowStickers(true);
+  };
+
   const editorProps = { busy, setStatus, onAdd };
 
   return (
     <main className="app">
-      <header className="top">
-        <h1>Sticker Bridge</h1>
-        {media && (
-          <button className="ghost" onClick={pick} disabled={busy}>
-            Pick another
-          </button>
-        )}
-      </header>
-
       <input ref={fileInput} type="file" accept="image/*,video/*" hidden onChange={onPicked} />
 
-      {!media && (
-        <section className="empty">
-          <p>Share a photo, GIF, or video to Sticker Bridge from your gallery, or pick one here.</p>
-          <button className="primary" onClick={pick}>
-            Pick a file
-          </button>
-        </section>
+      {showStickers ? (
+        <StickersScreen onClose={() => history.back()} setStatus={setStatus} refreshKey={refreshKey} />
+      ) : (
+        <>
+          <header className="top">
+            <h1>Sticker Bridge</h1>
+            {media && (
+              <button className="ghost" onClick={pick} disabled={busy}>
+                Pick another
+              </button>
+            )}
+          </header>
+
+          {!media && (
+            <section className="empty">
+              <p>Share a photo, GIF, or video to Sticker Bridge from your gallery, or pick one here.</p>
+              <button className="primary" onClick={pick}>
+                Pick a file
+              </button>
+              {stickerCount > 0 && (
+                <button className="link" onClick={openStickers}>
+                  Your stickers ({stickerCount})
+                </button>
+              )}
+            </section>
+          )}
+          {media?.kind === 'photo' && <PhotoEditor key={media.id} cutout={media.cutout} {...editorProps} />}
+          {media?.kind === 'clip' && <ClipEditor key={media.id} clip={media.clip} {...editorProps} />}
+        </>
       )}
-      {media?.kind === 'photo' && <PhotoEditor key={media.id} cutout={media.cutout} {...editorProps} />}
-      {media?.kind === 'clip' && <ClipEditor key={media.id} clip={media.clip} {...editorProps} />}
 
       {status && <p className={`status ${status.kind}`}>{status.text}</p>}
     </main>

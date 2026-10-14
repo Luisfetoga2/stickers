@@ -10,6 +10,30 @@ export interface AddResult {
   message: string;
 }
 
+/** One sticker saved in the app. */
+export interface SavedSticker {
+  packId: string;
+  file: string;
+  url: string;
+  animated: boolean;
+}
+
+export interface StickerLibrary {
+  /** Newest first. */
+  stickers: SavedSticker[];
+  /** True when WhatsApp still shows an older version of a pack, for example after a delete. */
+  needsUpdate: boolean;
+}
+
+interface NativeLibrary {
+  packs: Array<{
+    id: string;
+    animated: boolean;
+    needsUpdate: boolean;
+    stickers: Array<{ file: string; url: string }>;
+  }>;
+}
+
 export interface AppEvents {
   /** The shell started copying a shared or picked file. onSharedFile follows. */
   onOpening(): void;
@@ -37,6 +61,9 @@ interface ShellEvents extends AppEvents {
 interface NativeBridge {
   ready(): void;
   pickFile(): void;
+  listStickers(): string;
+  deleteSticker(packId: string, file: string): string;
+  updateWhatsApp(): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -57,6 +84,17 @@ export interface Bridge {
   addSticker(webp: Blob, animated: boolean): Promise<void>;
   /** Returns a mask image for the photo. Only its alpha channel matters. */
   removeBackground(jpeg: Blob, onProgress: (message: string) => void): Promise<MaskResult>;
+  listStickers(): Promise<StickerLibrary>;
+  deleteSticker(sticker: SavedSticker): Promise<void>;
+  /** Opens WhatsApp's Add screen for each changed pack. The result arrives through onAddResult. */
+  updateWhatsApp(): void;
+}
+
+function toLibrary(native: NativeLibrary): StickerLibrary {
+  const stickers = native.packs.flatMap((p) =>
+    p.stickers.map((s) => ({ packId: p.id, file: s.file, url: s.url, animated: p.animated })),
+  );
+  return { stickers: stickers.reverse(), needsUpdate: native.packs.some((p) => p.needsUpdate) };
 }
 
 export interface MaskResult {
@@ -108,6 +146,16 @@ function nativeBridge(native: NativeBridge): Bridge {
     async addSticker(webp, animated) {
       native.addSticker(await blobToBase64(webp), animated);
     },
+    async listStickers() {
+      return toLibrary(JSON.parse(native.listStickers()) as NativeLibrary);
+    },
+    async deleteSticker(sticker) {
+      const result = JSON.parse(native.deleteSticker(sticker.packId, sticker.file)) as { ok: boolean; message?: string };
+      if (!result.ok) throw new Error(result.message ?? 'Could not delete the sticker.');
+    },
+    updateWhatsApp() {
+      native.updateWhatsApp();
+    },
     async removeBackground(jpeg, onProgress) {
       const id = String(nextId++);
       const base64 = await blobToBase64(jpeg);
@@ -122,6 +170,10 @@ function nativeBridge(native: NativeBridge): Bridge {
 /** Lets the editor run in a desktop browser for testing. */
 function browserBridge(): Bridge {
   let events: AppEvents | null = null;
+  // Stickers "added" in browser mode, so the Your stickers screen has something to show.
+  const saved: SavedSticker[] = [];
+  let needsUpdate = false;
+  let count = 0;
   return {
     isNative: false,
     connect(e) {
@@ -135,14 +187,28 @@ function browserBridge(): Bridge {
     pickFile() {
       return false;
     },
-    async addSticker(webp) {
+    async addSticker(webp, animated) {
       const url = URL.createObjectURL(webp);
       const link = document.createElement('a');
       link.href = url;
       link.download = 'sticker.webp';
       link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      saved.unshift({ packId: animated ? 'animated_1' : 'static_1', file: `s${++count}.webp`, url, animated });
+      needsUpdate = true;
       events?.onAddResult({ ok: true, message: 'Browser mode: the sticker was downloaded.' });
+    },
+    async listStickers() {
+      return { stickers: [...saved], needsUpdate };
+    },
+    async deleteSticker(sticker) {
+      const i = saved.findIndex((s) => s.packId === sticker.packId && s.file === sticker.file);
+      if (i < 0) throw new Error('This sticker is already gone.');
+      saved.splice(i, 1);
+      needsUpdate = true;
+    },
+    updateWhatsApp() {
+      needsUpdate = false;
+      events?.onAddResult({ ok: true, message: 'Browser mode: WhatsApp is up to date.' });
     },
     async removeBackground(jpeg, onProgress) {
       // A fake cutout: keeps an ellipse in the middle. The real one runs in the Android app.

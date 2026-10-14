@@ -39,14 +39,18 @@ final class StickerStore {
         final int number;
         int version;
         final List<String> stickers;
+        /** True when the pack changed and WhatsApp has not confirmed the new version yet. */
+        boolean needsUpdate;
 
-        Pack(String id, String name, boolean animated, int number, int version, List<String> stickers) {
+        Pack(String id, String name, boolean animated, int number, int version, List<String> stickers,
+             boolean needsUpdate) {
             this.id = id;
             this.name = name;
             this.animated = animated;
             this.number = number;
             this.version = version;
             this.stickers = stickers;
+            this.needsUpdate = needsUpdate;
         }
     }
 
@@ -64,6 +68,16 @@ final class StickerStore {
             }
         }
         return visible;
+    }
+
+    /** Copies of every pack, including empty ones, in the order they were made. Safe to read on any thread. */
+    static synchronized List<Pack> allPacks(Context context) {
+        List<Pack> copies = new ArrayList<>();
+        for (Pack p : load(context)) {
+            copies.add(new Pack(p.id, p.name, p.animated, p.number, p.version, new ArrayList<>(p.stickers),
+                    p.needsUpdate));
+        }
+        return copies;
     }
 
     static synchronized Pack find(Context context, String packId) {
@@ -103,7 +117,7 @@ final class StickerStore {
         if (target == null) {
             int number = lastNumber + 1;
             target = new Pack(PackPlanner.packId(animated, number), PackPlanner.packName(animated, number),
-                    animated, number, 1, new ArrayList<>());
+                    animated, number, 1, new ArrayList<>(), true);
             packs.add(target);
         }
 
@@ -119,11 +133,44 @@ final class StickerStore {
 
         target.stickers.add(name);
         target.version++;
+        target.needsUpdate = true;
         if (target.stickers.size() == 1) {
             writeTray(firstFrame, new File(dir, TRAY_FILE));
         }
         save(context, packs);
         return target;
+    }
+
+    /** Removes one sticker. WhatsApp keeps showing it until the pack is sent to WhatsApp again. */
+    static synchronized Pack deleteSticker(Context context, String packId, String file) throws IOException {
+        Pack pack = find(context, packId);
+        if (pack == null || !pack.stickers.contains(file)) {
+            throw new IOException("This sticker is already gone.");
+        }
+        boolean wasFirst = pack.stickers.get(0).equals(file);
+        pack.stickers.remove(file);
+        pack.version++;
+        pack.needsUpdate = true;
+
+        File dir = packDir(context, packId);
+        if (wasFirst && !pack.stickers.isEmpty()) {
+            // The tray icon shows the first sticker, so it follows the new first one.
+            byte[] first = Files.readAllBytes(new File(dir, pack.stickers.get(0)).toPath());
+            writeTray(decodeFirstFrame(first), new File(dir, TRAY_FILE));
+        }
+        save(context, load(context));
+        //noinspection ResultOfMethodCallIgnored
+        new File(dir, file).delete();
+        return pack;
+    }
+
+    /** WhatsApp accepted the current version of the pack. */
+    static synchronized void markUpdated(Context context, String packId) throws IOException {
+        Pack pack = find(context, packId);
+        if (pack != null && pack.needsUpdate) {
+            pack.needsUpdate = false;
+            save(context, load(context));
+        }
     }
 
     /** Checks size and format, and returns the first frame for the tray icon. */
@@ -136,18 +183,21 @@ final class StickerStore {
                 || webp[8] != 'W' || webp[9] != 'E' || webp[10] != 'B' || webp[11] != 'P') {
             throw new IOException("The sticker is not a WebP file.");
         }
-        // ImageDecoder reads both static and animated WebP. For animated files it returns the first frame.
-        Bitmap first;
-        try {
-            first = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(webp)),
-                    (decoder, info, source) -> decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE));
-        } catch (IOException e) {
-            throw new IOException("Android could not read the sticker: " + e.getMessage(), e);
-        }
+        Bitmap first = decodeFirstFrame(webp);
         if (first.getWidth() != STICKER_SIZE || first.getHeight() != STICKER_SIZE) {
             throw new IOException("The sticker is " + first.getWidth() + "x" + first.getHeight() + ". It must be 512x512.");
         }
         return first;
+    }
+
+    /** ImageDecoder reads both static and animated WebP. For animated files it returns the first frame. */
+    private static Bitmap decodeFirstFrame(byte[] webp) throws IOException {
+        try {
+            return ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(webp)),
+                    (decoder, info, source) -> decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE));
+        } catch (IOException e) {
+            throw new IOException("Android could not read the sticker: " + e.getMessage(), e);
+        }
     }
 
     /** The tray icon is the first sticker, scaled to 96x96. For animated stickers this is the first frame. */
@@ -184,7 +234,7 @@ final class StickerStore {
                         stickers.add(s.getString(j));
                     }
                     packs.add(new Pack(p.getString("id"), p.getString("name"), p.getBoolean("animated"),
-                            p.getInt("number"), p.getInt("version"), stickers));
+                            p.getInt("number"), p.getInt("version"), stickers, p.optBoolean("needsUpdate", false)));
                 }
             } catch (IOException | JSONException e) {
                 throw new IllegalStateException("The pack index is damaged: " + e.getMessage(), e);
@@ -204,6 +254,7 @@ final class StickerStore {
                         .put("animated", pack.animated)
                         .put("number", pack.number)
                         .put("version", pack.version)
+                        .put("needsUpdate", pack.needsUpdate)
                         .put("stickers", new JSONArray(pack.stickers)));
             }
             byte[] json = new JSONObject().put("packs", array).toString(2).getBytes(StandardCharsets.UTF_8);

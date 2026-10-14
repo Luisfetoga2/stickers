@@ -59,11 +59,14 @@ The flow on the phone:
 
 ### Packs
 
+The app stays "open it and make a sticker". Packs work on their own, with no pack screens, names, or settings.
+
 - The app keeps one open static pack and one open animated pack.
 - If a new pack has fewer than 3 real stickers, the app fills it with copies of the first sticker. Real stickers replace the copies.
 - When a pack reaches 30 stickers, the next sticker starts a new pack.
-- The tray icon (the small pack image in WhatsApp) comes from the first sticker of the pack.
-- A Packs screen lists your packs and stickers. You can delete a sticker or add a pack to WhatsApp again.
+- The tray icon (the small pack image in WhatsApp) comes from the first sticker of the pack, and it follows the new first sticker after a delete.
+- A small "Your stickers" link on the start screen opens one grid of every sticker. Tap a sticker, then tap Delete.
+- WhatsApp only reads a pack again when the app asks it. After a delete, an "Update WhatsApp" button sends the changed packs.
 
 ## Project layout
 
@@ -112,7 +115,7 @@ Each phase ends with a new APK for you to test on your phone.
 | 2 | Background removal with ML Kit, plus erase and restore brushes | Cut out a person or a pet with no border. |
 | 3 | GIF and video: trim, frame rate, animated WebP, size fitting | Make an animated sticker from a video. |
 | 3b | Background removal for video, with smoothing and erase strokes on every frame | Cut out a person in a short video, and measure the wait time. |
-| 4 | Packs screen, delete, new pack at 30, tray icon from the first sticker | Delete a sticker and add the pack again. |
+| 4 | Your stickers grid with delete and Update WhatsApp, number boxes next to sliders, Back button support | Delete a sticker, then tap Update WhatsApp. |
 | 5 | Clean up: remove the share test page and the sample packs, and write the README | Final install over the old app. |
 
 ## Open risks
