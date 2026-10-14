@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+def providerAuthority = 'io.github.luisfetoga2.stickers.provider'
+def buildNumber = (project.findProperty('versionCode') ?: '1') as int
+def keystorePath = System.getenv('SIGNING_KEYSTORE_PATH')
+
+android {
+    namespace 'io.github.luisfetoga2.stickers'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.github.luisfetoga2.stickers'
+        minSdk 29
+        targetSdk 35
+        versionCode buildNumber
+        versionName "0.1.${buildNumber}"
+        manifestPlaceholders = [contentProviderAuthority: providerAuthority]
+        buildConfigField 'String', 'CONTENT_PROVIDER_AUTHORITY', "\"${providerAuthority}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storeType 'pkcs12'
+                storePassword System.getenv('SIGNING_PASSWORD')
+                keyAlias 'sticker'
+                keyPassword System.getenv('SIGNING_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystorePath) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
