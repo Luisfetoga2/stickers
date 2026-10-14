@@ -718,6 +718,22 @@ public class MainActivity extends Activity {
             return BuildConfig.VERSION_NAME;
         }
 
+        /** Asks GitHub now and reports the answer through onUpdateCheck. */
+        @JavascriptInterface
+        public void checkForUpdate() {
+            UpdateChecker.checkNow(MainActivity.this, latest -> main.post(() -> {
+                try {
+                    JSONObject result = new JSONObject()
+                            .put("ok", latest > 0)
+                            .put("newer", latest > BuildConfig.VERSION_CODE)
+                            .put("latest", latest > 0 ? UpdateChecker.versionName(latest) : JSONObject.NULL);
+                    callEditor("onUpdateCheck", result.toString());
+                } catch (JSONException e) {
+                    throw new IllegalStateException(e);
+                }
+            }));
+        }
+
         /** Opens the latest APK in the browser, which downloads it. Android then offers to install it. */
         @JavascriptInterface
         public void openUpdate() {

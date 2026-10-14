@@ -22,6 +22,11 @@ final class UpdateChecker {
         void onNewerBuild(int build);
     }
 
+    interface ResultListener {
+        /** Called on a background thread with the latest build on GitHub, or -1 when GitHub could not be reached. */
+        void onResult(int latestBuild);
+    }
+
     static final String DOWNLOAD_URL =
             "https://github.com/Luisfetoga2/stickers/releases/latest/download/sticker-bridge.apk";
     private static final String LATEST_URL = "https://api.github.com/repos/Luisfetoga2/stickers/releases/latest";
@@ -52,24 +57,38 @@ final class UpdateChecker {
         return "0.1." + build;
     }
 
+    /** The check on start: at most every few hours, and quiet unless a newer build exists. */
     static void check(Context context, int installedBuild, Listener listener) {
         Context app = context.getApplicationContext();
-        Thread thread = new Thread(() -> {
-            int latest = latestBuild(app);
+        run(() -> {
+            int latest = latestBuild(app, false);
             if (latest > installedBuild) {
                 listener.onNewerBuild(latest);
             }
-        }, "update-check");
+        });
+    }
+
+    /** The check the user asks for: always asks GitHub, and always reports back. */
+    static void checkNow(Context context, ResultListener listener) {
+        Context app = context.getApplicationContext();
+        run(() -> listener.onResult(latestBuild(app, true)));
+    }
+
+    private static void run(Runnable task) {
+        Thread thread = new Thread(task, "update-check");
         thread.setDaemon(true);
         thread.start();
     }
 
-    /** Asks GitHub at most every few hours. In between, and when offline, it uses the last answer. */
-    private static int latestBuild(Context context) {
+    /**
+     * Asks GitHub for the latest build. Without force, it asks at most every few hours and otherwise uses the
+     * last answer. With force, it always asks, and it returns -1 when GitHub cannot be reached.
+     */
+    private static int latestBuild(Context context, boolean force) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         long now = System.currentTimeMillis();
-        int cached = prefs.getInt(LATEST_BUILD, -1);
-        if (now - prefs.getLong(LAST_CHECK, 0) < CHECK_EVERY_MS) {
+        int cached = force ? -1 : prefs.getInt(LATEST_BUILD, -1);
+        if (!force && now - prefs.getLong(LAST_CHECK, 0) < CHECK_EVERY_MS) {
             return cached;
         }
         HttpURLConnection connection = null;

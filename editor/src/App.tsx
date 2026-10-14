@@ -100,6 +100,16 @@ export function App() {
       onClipboardLink(url) {
         setCopiedLink(url);
       },
+      onUpdateCheck(result) {
+        if (!result.ok) {
+          setStatus({ kind: 'error', text: 'Could not reach GitHub. Make sure that the phone is online, then try again.' });
+        } else if (result.newer && result.latest) {
+          setNewVersion(result.latest);
+          setStatus({ kind: 'ok', text: `Version ${result.latest} is out. Tap Download to get it.` });
+        } else {
+          setStatus({ kind: 'ok', text: `You have the newest version, ${bridge.appVersion() ?? result.latest}.` });
+        }
+      },
     });
   }, [load]);
 
@@ -252,7 +262,16 @@ export function App() {
                   </button>
                 </div>
               )}
-              {bridge.appVersion() && <span className="hint">Version {bridge.appVersion()}</span>}
+              {bridge.appVersion() && (
+                <button
+                  className="version-check"
+                  onClick={() => {
+                    if (bridge.checkForUpdate()) setStatus({ kind: 'info', text: 'Checking for updates…' });
+                  }}
+                >
+                  Version {bridge.appVersion()}
+                </button>
+              )}
             </footer>
           )}
           {media?.kind === 'photo' && <PhotoEditor key={media.id} cutout={media.cutout} {...editorProps} />}

@@ -48,6 +48,14 @@ export interface AppEvents {
   onUpdateAvailable(version: string): void;
   /** The user copied a link since the last time the app looked. */
   onClipboardLink(url: string): void;
+  /** The answer to checkForUpdate. latest is null when GitHub could not be reached. */
+  onUpdateCheck(result: UpdateCheck): void;
+}
+
+export interface UpdateCheck {
+  ok: boolean;
+  newer: boolean;
+  latest: string | null;
 }
 
 interface BackgroundResult {
@@ -77,6 +85,7 @@ interface NativeBridge {
   cancelLink(): void;
   appVersion(): string;
   openUpdate(): void;
+  checkForUpdate(): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -111,6 +120,8 @@ export interface Bridge {
   appVersion(): string | null;
   /** Opens the latest APK download in the phone's browser. */
   openUpdate(): void;
+  /** Asks GitHub now. The answer arrives through onUpdateCheck. Returns false when it cannot ask here. */
+  checkForUpdate(): boolean;
 }
 
 function toLibrary(native: NativeLibrary): StickerLibrary {
@@ -192,6 +203,10 @@ function nativeBridge(native: NativeBridge): Bridge {
     openUpdate() {
       native.openUpdate();
     },
+    checkForUpdate() {
+      native.checkForUpdate();
+      return true;
+    },
     async removeBackground(jpeg, onProgress) {
       const id = String(nextId++);
       const base64 = await blobToBase64(jpeg);
@@ -254,6 +269,9 @@ function browserBridge(): Bridge {
       return null;
     },
     openUpdate() {},
+    checkForUpdate() {
+      return false;
+    },
     async removeBackground(jpeg, onProgress) {
       // A fake cutout for testing: removes the frame's border color, like a green screen. The real one runs in the app.
       onProgress('Browser mode: making a fake cutout…');
