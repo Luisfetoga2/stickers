@@ -2,7 +2,7 @@ package io.github.luisfetoga2.stickers;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -11,6 +11,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -85,7 +86,7 @@ final class StickerStore {
 
     /** Saves a new sticker in the open pack of its kind, or starts a new pack when that one is full. */
     static synchronized Pack addSticker(Context context, byte[] webp, boolean animated) throws IOException {
-        validate(webp, animated);
+        Bitmap firstFrame = validate(webp, animated);
         List<Pack> packs = load(context);
 
         Pack target = null;
@@ -119,13 +120,14 @@ final class StickerStore {
         target.stickers.add(name);
         target.version++;
         if (target.stickers.size() == 1) {
-            writeTray(webp, new File(dir, TRAY_FILE));
+            writeTray(firstFrame, new File(dir, TRAY_FILE));
         }
         save(context, packs);
         return target;
     }
 
-    private static void validate(byte[] webp, boolean animated) throws IOException {
+    /** Checks size and format, and returns the first frame for the tray icon. */
+    private static Bitmap validate(byte[] webp, boolean animated) throws IOException {
         int limit = animated ? ANIMATED_LIMIT : STATIC_LIMIT;
         if (webp.length > limit) {
             throw new IOException("The sticker is " + webp.length / 1024 + " KB. The limit is " + limit / 1024 + " KB.");
@@ -134,20 +136,22 @@ final class StickerStore {
                 || webp[8] != 'W' || webp[9] != 'E' || webp[10] != 'B' || webp[11] != 'P') {
             throw new IOException("The sticker is not a WebP file.");
         }
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeByteArray(webp, 0, webp.length, bounds);
-        if (bounds.outWidth != STICKER_SIZE || bounds.outHeight != STICKER_SIZE) {
-            throw new IOException("The sticker is " + bounds.outWidth + "x" + bounds.outHeight + ". It must be 512x512.");
+        // ImageDecoder reads both static and animated WebP. For animated files it returns the first frame.
+        Bitmap first;
+        try {
+            first = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(webp)),
+                    (decoder, info, source) -> decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE));
+        } catch (IOException e) {
+            throw new IOException("Android could not read the sticker: " + e.getMessage(), e);
         }
+        if (first.getWidth() != STICKER_SIZE || first.getHeight() != STICKER_SIZE) {
+            throw new IOException("The sticker is " + first.getWidth() + "x" + first.getHeight() + ". It must be 512x512.");
+        }
+        return first;
     }
 
     /** The tray icon is the first sticker, scaled to 96x96. For animated stickers this is the first frame. */
-    private static void writeTray(byte[] webp, File target) throws IOException {
-        Bitmap full = BitmapFactory.decodeByteArray(webp, 0, webp.length);
-        if (full == null) {
-            throw new IOException("Could not read the sticker to make the tray icon.");
-        }
+    private static void writeTray(Bitmap full, File target) throws IOException {
         Bitmap tray = Bitmap.createScaledBitmap(full, TRAY_SIZE, TRAY_SIZE, true);
         File tmp = new File(target.getPath() + ".tmp");
         try (FileOutputStream out = new FileOutputStream(tmp)) {

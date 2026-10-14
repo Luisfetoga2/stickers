@@ -47,7 +47,14 @@ The flow on the phone:
 - Pick the frame rate. Fewer frames give a sharper sticker inside the 500 KB limit.
 - The editor makes each frame with the browser's WebP encoder. A small TypeScript muxer (a tool that joins frames into one file) builds the animated WebP.
 - The app lowers the quality, then the frame rate, until the file fits 500 KB.
-- Version 1 has no background removal for video. Each frame takes too long on a phone. We can add it later.
+- Phase 3 has no background removal for video. Phase 3b adds it.
+
+### Background removal for video (Phase 3b)
+
+- The app runs the same ML Kit model on every frame, at a size close to the 512 px sticker. A progress bar shows the frames that are done.
+- Each mask is blended with the masks of the frames next to it. This keeps the edges from flickering.
+- An erase stroke applies to every frame. It removes things that stay still, such as a logo or a corner.
+- If the general model flickers too much on people, the fallback is the ML Kit selfie model, which is made for video.
 
 ### Packs
 
@@ -103,12 +110,14 @@ Each phase ends with a new APK for you to test on your phone.
 | 1 | WebView shell, share-to-app, bridge, pack store with copies, and a basic photo editor (move, zoom, add) | Share a photo from the gallery and add it as a sticker. |
 | 2 | Background removal with ML Kit, plus erase and restore brushes | Cut out a person or a pet with no border. |
 | 3 | GIF and video: trim, frame rate, animated WebP, size fitting | Make an animated sticker from a video. |
+| 3b | Background removal for video, with smoothing and erase strokes on every frame | Cut out a person in a short video, and measure the wait time. |
 | 4 | Packs screen, delete, new pack at 30, tray icon from the first sticker | Delete a sticker and add the pack again. |
 | 5 | Clean up: remove the share test page and the sample packs, and write the README | Final install over the old app. |
 
 ## Open risks
 
 - ML Kit subject segmentation is a beta API. If it fails on your phone, the fallback is MediaPipe image segmentation, which runs offline in the app.
+- Video background removal can take too long on a phone. Phase 3b measures it before we tune it.
 - Video seeking in a WebView can be slow or a little off. If it is, the shell can extract frames with Android's `MediaMetadataRetriever` instead.
 - We do not know yet what WhatsApp does when the app deletes a sticker from a pack that you already added. Phase 4 tests this.
 - This Mac has no Java or Android SDK. Android builds run only in GitHub Actions, so each Android fix needs a push and a short wait.

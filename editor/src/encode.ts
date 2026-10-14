@@ -7,8 +7,8 @@ export const STATIC_LIMIT = 100 * 1024;
 export const QUALITIES = [0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
 
 export class TooBigError extends Error {
-  constructor(readonly size: number, readonly limit: number) {
-    super(`The sticker is ${kb(size)} even at the lowest quality. The limit is ${kb(limit)}.`);
+  constructor(readonly size: number, readonly limit: number, advice = '') {
+    super(`The sticker is ${kb(size)} even at the lowest quality. The limit is ${kb(limit)}. ${advice}`.trim());
   }
 }
 
