@@ -33,7 +33,9 @@ The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 
 - Set Start and End. A sticker is 10 seconds at most.
 - Tap "Find loop" to move Start and End to two frames that match, so the sticker loops without a jump.
-- Pick a frame rate. A lower frame rate gives a sharper sticker inside the 500 KB limit.
+- Pick a frame rate. The app always keeps the frame rate you pick.
+- Tap "Check size" to see the file size at each sharpness level. Move Sharpness to choose, and the size updates at once.
+- If the sticker is too big at any sharpness, the app says so. Then lower the frame rate or make the clip shorter.
 - Tap Play to watch the sticker loop in the editor.
 - For a green screen video, tap "Green screen". If the wrong color is gone, tap "Pick color" and tap the screen in the video.
 - For any other video, tap "AI cutout". Trim and frame rate lock while the cutout is on.

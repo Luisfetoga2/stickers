@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fallbackFps, frameTimes, pickQuality } from './animate';
+import { ANIMATED_LIMIT, QUALITIES, bestQuality, estimateSizes, fits, frameTimes } from './animate';
 
 describe('frameTimes', () => {
   it('spaces frames evenly from the start', () => {
@@ -11,26 +11,30 @@ describe('frameTimes', () => {
   });
 });
 
-describe('fallbackFps', () => {
-  it('tries lower frame rates after the chosen one', () => {
-    expect(fallbackFps(12)).toEqual([12, 10, 8, 6, 5]);
-    expect(fallbackFps(8)).toEqual([8, 6, 5]);
+describe('estimateSizes', () => {
+  it('scales sample sizes by area and adds the container bytes', () => {
+    const estimates = estimateSizes(new Map([[0.9, 1000]]), 10, 40);
+    expect(estimates.get(0.9)).toBe(10040);
   });
 });
 
-describe('pickQuality', () => {
-  it('picks the best quality whose estimate fits under 90% of the limit', () => {
-    // The sample is a tenth of the total area, and the limit is 1000, so a sample fits at 90 or less.
-    const sizes = new Map([
-      [0.95, 200],
-      [0.9, 120],
-      [0.85, 90],
-      [0.75, 60],
-    ]);
-    expect(pickQuality(sizes, 10, 1000)).toBe(0.85);
+describe('bestQuality', () => {
+  const sizes = (bytes: number[]) => new Map(QUALITIES.map((q, i) => [q, bytes[i]]));
+
+  it('picks the sharpest level that fits under 90% of the limit', () => {
+    const kb = 1024;
+    const estimates = sizes([700, 600, 500, 440, 400, 300, 200, 150, 100].map((k) => k * kb));
+    expect(bestQuality(estimates)).toBe(QUALITIES[3]);
   });
 
-  it('falls back to the lowest quality', () => {
-    expect(pickQuality(new Map([[0.95, 999]]), 10, 100)).toBe(0.25);
+  it('returns null when even the lowest level is too big', () => {
+    expect(bestQuality(sizes(QUALITIES.map(() => ANIMATED_LIMIT)))).toBeNull();
+  });
+});
+
+describe('fits', () => {
+  it('keeps a 10% margin under the limit', () => {
+    expect(fits(ANIMATED_LIMIT * 0.9)).toBe(true);
+    expect(fits(ANIMATED_LIMIT * 0.95)).toBe(false);
   });
 });

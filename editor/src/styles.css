@@ -445,3 +445,26 @@ input[type='range']:disabled {
 .copied .row {
   justify-content: center;
 }
+
+.size-row {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.size-row .hint {
+  margin: 0;
+}
+
+.size-line {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.size-line.ok {
+  color: var(--ok);
+}
+
+.size-line.error {
+  color: var(--error);
+}

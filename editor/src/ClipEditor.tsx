@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FPS_CHOICES, MAX_SECONDS, frameTimes, makeAnimated } from './animate';
+import {
+  ANIMATED_LIMIT,
+  FPS_CHOICES,
+  MAX_SECONDS,
+  QUALITIES,
+  bestQuality,
+  encodePrepared,
+  fits,
+  frameTimes,
+  prepareAnimated,
+  tooBigAtAnyLevel,
+  type Prepared,
+} from './animate';
 import { bridge } from './bridge';
 import { DEFAULT_CHROMA, chromaKey, detectKeyColor, toHex, type ChromaSettings } from './chroma';
 import type { Clip } from './clip';
@@ -11,6 +23,7 @@ import { Stage, type Tool } from './Stage';
 import { followOffsets } from './follow';
 import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
 import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
+import { kb } from './encode';
 import type { EditorProps } from './types';
 
 const MIN_LENGTH = 0.2;
@@ -30,6 +43,24 @@ function nearestFps(fps: number): number {
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** The sharpness levels from lowest to highest, for the slider. */
+const LEVELS_UP = [...QUALITIES].reverse();
+
+function nearestLevel(q: number): number {
+  return QUALITIES.reduce((best, level) => (Math.abs(level - q) < Math.abs(best - q) ? level : best));
+}
+
+/** The estimated size at the chosen sharpness, green when it fits and red when it does not. */
+function SizeLine({ estimate }: { estimate: number }) {
+  const ok = fits(estimate);
+  return (
+    <p className={`size-line ${ok ? 'ok' : 'error'}`}>
+      About {kb(estimate)} of {kb(ANIMATED_LIMIT)}.{' '}
+      {ok ? 'It fits.' : 'Too big. Lower the sharpness, the frame rate, or the length.'}
+    </p>
+  );
+}
 
 /** Trim, frame, remove the background of, and encode a video or GIF into an animated sticker. */
 export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { clip: Clip }) {
@@ -52,12 +83,18 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const [fps, setFps] = useState(() => nearestFps(clip.defaultFps));
   const [shownTime, setShownTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [working, setWorking] = useState<'cutout' | 'encode' | 'loop' | null>(null);
+  const [working, setWorking] = useState<'cutout' | 'encode' | 'loop' | 'measure' | null>(null);
   const [matte, setMatte] = useState<Matte>('none');
   const [chroma, setChroma] = useState<ChromaSettings | null>(null);
   const [cutout, setCutout] = useState<ClipCutout | null>(null);
   const [tool, setTool] = useState<Tool>('move');
   const [follow, setFollow] = useState(false);
+  /** The last Check size result, with the settings it belongs to. */
+  const [prepared, setPrepared] = useState<{ key: string; data: Prepared } | null>(null);
+  /** The chosen sharpness level, one of QUALITIES. Null means the sharpest level that fits. */
+  const [quality, setQuality] = useState<number | null>(null);
+  /** Goes up when the frames change in ways the other settings do not show, such as brush strokes. */
+  const [contentVersion, setContentVersion] = useState(0);
   const [brushSize, setBrushSize] = useState(24);
   const [, setUndoVersion] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -266,6 +303,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       matteRef.current = { ...matteRef.current, matte: 'chroma' };
       setMatte('chroma');
       setChroma({ ...DEFAULT_CHROMA, key });
+      setContentVersion((v) => v + 1);
       setStatus({
         kind: 'ok',
         text: 'Green screen on. If the wrong color is gone, tap Pick color and tap the screen in the video.',
@@ -307,6 +345,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       matteRef.current = { ...matteRef.current, matte: 'ai', cutout: built };
       setCutout(built);
       setMatte('ai');
+      setContentVersion((v) => v + 1);
       setTool('move');
       show(start);
       const seconds = ((performance.now() - began) / 1000).toFixed(1);
@@ -331,6 +370,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     setTool('move');
     setFollow(false);
     work.keep.reset();
+    setContentVersion((v) => v + 1);
     setStatus(null);
     show(matte === 'ai' ? start : shownTime);
   };
@@ -396,6 +436,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     setPlaying(false);
     work.keep.snapshot();
     setUndoVersion((v) => v + 1);
+    setContentVersion((v) => v + 1);
     const f = toWork(p);
     work.keep.stroke(f, f, workRadius(), tool);
     repaint();
@@ -410,53 +451,94 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const undo = () => {
     if (work.keep.undo()) {
       setUndoVersion((v) => v + 1);
+      setContentVersion((v) => v + 1);
       repaint();
     }
   };
 
-  const add = async () => {
+  /** The frames as the sticker shows them: plain, keyed, or cut out, and moved when following. */
+  const buildSource = (): FrameSource =>
+    matte === 'none'
+      ? clip
+      : {
+          width: clip.width,
+          height: clip.height,
+          frameAt: async (t) =>
+            matte === 'ai' && cutout ? processFrame(null, cutout.indexAt(t)) : processFrame(await clip.frameAt(t), 0),
+          // Green screen keys each frame as the clip plays through.
+          readFrames:
+            matte === 'chroma'
+              ? (times, onFrame, signal) =>
+                  clip.readFrames(times, (frame, i) => onFrame(processFrame(frame, 0), i), signal)
+              : undefined,
+          transformAt: following && cutout ? (t, base) => followAt(cutout.indexAt(t), base) : undefined,
+        };
+
+  // Everything that changes the sticker's frames. A Check size result is only valid for the same key.
+  const settingsKey = JSON.stringify({ transform, start, end, fps, matte, chroma, follow, contentVersion });
+  const fresh = prepared?.key === settingsKey ? prepared.data : null;
+  useEffect(() => () => prepared?.data.dispose(), [prepared]);
+
+  const prepare = async (signal: AbortSignal): Promise<Prepared> => {
+    const data = await prepareAnimated(
+      buildSource(),
+      transform,
+      start,
+      end,
+      fps,
+      (text) => setStatus({ kind: 'info', text }),
+      signal,
+    );
+    setPrepared({ key: settingsKey, data });
+    return data;
+  };
+
+  /** Runs a task that reads the clip, with Cancel, and shows the current frame again after it. */
+  const runTask = async (kind: 'encode' | 'measure', task: (signal: AbortSignal) => Promise<void>) => {
     setPlaying(false);
     const controller = new AbortController();
     abortRef.current = controller;
-    setWorking('encode');
+    setWorking(kind);
     try {
-      const source: FrameSource =
-        matte === 'none'
-          ? clip
-          : {
-              width: clip.width,
-              height: clip.height,
-              frameAt: async (t) =>
-                matte === 'ai' && cutout
-                  ? processFrame(null, cutout.indexAt(t))
-                  : processFrame(await clip.frameAt(t), 0),
-              // Green screen keys each frame as the clip plays through.
-              readFrames:
-                matte === 'chroma'
-                  ? (times, onFrame, signal) =>
-                      clip.readFrames(times, (frame, i) => onFrame(processFrame(frame, 0), i), signal)
-                  : undefined,
-              transformAt: following && cutout ? (t, base) => followAt(cutout.indexAt(t), base) : undefined,
-            };
-      const animated = await makeAnimated(
-        source,
-        transform,
-        start,
-        end,
-        fps,
-        (text) => setStatus({ kind: 'info', text }),
-        controller.signal,
-      );
-      await onAdd(animated.blob, true);
+      await task(controller.signal);
     } catch (err) {
       setStatus(controller.signal.aborted ? { kind: 'info', text: 'Cancelled.' } : { kind: 'error', text: errorText(err) });
     } finally {
       abortRef.current = null;
       setWorking(null);
-      // Encoding reused the work canvases, so show the current frame again.
+      // Reading reused the work canvases and moved the video, so show the current frame again.
       show(shownTime);
     }
   };
+
+  const checkSize = () =>
+    runTask('measure', async (signal) => {
+      const data = await prepare(signal);
+      const best = bestQuality(data.estimates);
+      setQuality(best ?? QUALITIES[QUALITIES.length - 1]);
+      setStatus(
+        best === null
+          ? { kind: 'error', text: tooBigAtAnyLevel(data) }
+          : {
+              kind: 'ok',
+              text: `At ${fps} fps, the sharpest level that fits is ${Math.round(best * 100)}%. Move Sharpness to see other sizes.`,
+            },
+      );
+    });
+
+  const add = () =>
+    runTask('encode', async (signal) => {
+      const data = fresh ?? (await prepare(signal));
+      // After Check size, use the level the user chose. Otherwise, the sharpest level that fits.
+      const level = fresh && quality !== null ? quality : bestQuality(data.estimates);
+      if (!fresh) setQuality(level ?? QUALITIES[QUALITIES.length - 1]);
+      if (level === null) {
+        setStatus({ kind: 'error', text: tooBigAtAnyLevel(data) });
+        return;
+      }
+      const animated = await encodePrepared(data, level, (text) => setStatus({ kind: 'info', text }), signal);
+      await onAdd(animated.blob, true);
+    });
 
   const cancel = () => abortRef.current?.abort();
 
@@ -685,6 +767,39 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             height={clip.height}
             onFrame={(mode) => setTransform({ ...centered(clip.width, clip.height, mode), flip: transform.flip })}
           />
+        )}
+      </section>
+
+      <section className="controls">
+        {fresh && quality !== null ? (
+          <>
+            <SliderField
+              label="Sharpness"
+              value={Math.round(quality * 100)}
+              min={25}
+              max={95}
+              decimals={0}
+              disabled={locked}
+              // The slider moves between the levels, lowest on the left. The box snaps to the nearest level.
+              toSlider={(v) => LEVELS_UP.indexOf(nearestLevel(v / 100))}
+              fromSlider={(p) => LEVELS_UP[Math.round(p)] * 100}
+              sliderMin={0}
+              sliderMax={LEVELS_UP.length - 1}
+              onChange={(v) => setQuality(nearestLevel(v / 100))}
+            />
+            <SizeLine estimate={fresh.estimates.get(quality) ?? 0} />
+          </>
+        ) : (
+          <div className="row size-row">
+            <button className="ghost" onClick={checkSize} disabled={locked}>
+              Check size
+            </button>
+            <p className="hint">
+              {prepared
+                ? 'The settings changed. Check the size again.'
+                : `See how sharp this sticker can be at ${fps} fps.`}
+            </p>
+          </div>
         )}
       </section>
 
