@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Downloads videos from links and updates yt-dlp. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Android 11+ hides other apps unless we name them here. -->
     <queries>
         <package android:name="com.whatsapp" />
@@ -9,6 +12,7 @@
 
     <application
         android:allowBackup="false"
+        android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Sticker Bridge"
         android:theme="@android:style/Theme.DeviceDefault.DayNight">
@@ -34,6 +38,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
+            </intent-filter>
+            <!-- Share a post from TikTok, YouTube, Reddit, X, or Instagram. Those apps share a link as text. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
 

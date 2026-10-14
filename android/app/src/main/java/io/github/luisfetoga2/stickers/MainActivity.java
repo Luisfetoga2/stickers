@@ -66,6 +66,9 @@ public class MainActivity extends Activity {
     private File sharedDir;
     private File workDir;
     private BackgroundRemover remover;
+    private LinkDownloader links;
+    /** A link status that arrived before the editor was ready: [method, JSON argument]. */
+    private String[] pendingLinkEvent;
     /** MIME type of the file in sharedDir. Read on a WebView thread. */
     private volatile String sharedMime = "application/octet-stream";
 
@@ -90,6 +93,8 @@ public class MainActivity extends Activity {
         sharedDir = new File(getCacheDir(), "shared");
         workDir = new File(getCacheDir(), "work");
         remover = new BackgroundRemover(this, io);
+        links = new LinkDownloader(this);
+        links.warmUp();
 
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
@@ -180,14 +185,26 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         remover.close();
+        links.shutdown();
         io.shutdown();
         webView.destroy();
         super.onDestroy();
     }
 
-    /** Opens a file that another app shared with Sticker Bridge. */
+    /** Opens a file or a link that another app shared with Sticker Bridge. */
     private void handleShare(Intent intent) {
         if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) {
+            return;
+        }
+        // TikTok, Instagram, YouTube, and others share a post as text with a link in it.
+        String type = intent.getType();
+        if (type != null && type.startsWith("text/")) {
+            String url = LinkDownloader.firstUrl(intent.getStringExtra(Intent.EXTRA_TEXT));
+            if (url != null) {
+                openLink(url);
+            } else {
+                sendLinkEvent("onLinkError", "The shared text has no link in it.");
+            }
             return;
         }
         Uri uri = Build.VERSION.SDK_INT >= 33
@@ -352,7 +369,76 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Downloads the video of a post with yt-dlp, then opens it like a shared file. */
+    private void openLink(String url) {
+        sendLinkEvent("onLinkProgress", "Opening the link…");
+        links.download(url, new File(getCacheDir(), "link"), new LinkDownloader.Listener() {
+            @Override
+            public void onProgress(String message) {
+                main.post(() -> sendLinkEvent("onLinkProgress", message));
+            }
+
+            @Override
+            public void onFile(File file) {
+                String mime = LinkDownloader.mimeOf(file);
+                io.execute(() -> {
+                    try {
+                        String name = moveToShared(file);
+                        JSONObject shared = new JSONObject()
+                                .put("url", "https://" + HOST + "/shared/" + name)
+                                .put("mime", mime);
+                        main.post(() -> {
+                            sharedMime = mime;
+                            pendingShare = shared;
+                            deliverShare();
+                        });
+                    } catch (IOException | JSONException e) {
+                        main.post(() -> sendLinkEvent("onLinkError", "Could not open the download: " + e.getMessage()));
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                main.post(() -> sendLinkEvent("onLinkError", message));
+            }
+        });
+    }
+
+    /** Moves a downloaded file to where the editor reads shared files. */
+    private String moveToShared(File file) throws IOException {
+        File[] old = sharedDir.listFiles();
+        if (old != null) {
+            for (File f : old) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
+        if (!sharedDir.isDirectory() && !sharedDir.mkdirs()) {
+            throw new IOException("Could not create the cache folder.");
+        }
+        String name = "file" + System.currentTimeMillis();
+        if (!file.renameTo(new File(sharedDir, name))) {
+            throw new IOException("Could not move the download.");
+        }
+        return name;
+    }
+
+    /** Sends a link status to the editor, or keeps the last one until the editor is ready. */
+    private void sendLinkEvent(String method, String message) {
+        String json = JSONObject.quote(message);
+        if (editorReady) {
+            callEditor(method, json);
+        } else {
+            pendingLinkEvent = new String[]{method, json};
+        }
+    }
+
     private void deliverShare() {
+        if (editorReady && pendingLinkEvent != null) {
+            callEditor(pendingLinkEvent[0], pendingLinkEvent[1]);
+            pendingLinkEvent = null;
+        }
         if (!editorReady || pendingShare == null) {
             return;
         }
@@ -558,6 +644,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void pickFile() {
             main.post(MainActivity.this::pickMedia);
+        }
+
+        @JavascriptInterface
+        public void openLink(String url) {
+            main.post(() -> MainActivity.this.openLink(url));
+        }
+
+        @JavascriptInterface
+        public void cancelLink() {
+            links.cancel();
         }
 
         @JavascriptInterface

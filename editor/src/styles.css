@@ -375,3 +375,26 @@ input[type='range']:disabled {
   background: var(--error);
   color: #fff;
 }
+
+.link-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.link-form input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.link-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}

@@ -33,6 +33,8 @@ export function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (blob: Blob, mime: string, name = '') => {
@@ -70,6 +72,8 @@ export function App() {
         setStatus({ kind: 'info', text: 'Opening…' });
       },
       async onSharedFile(file) {
+        setLinkBusy(false);
+        setLink('');
         const res = await fetch(file.url);
         const blob = await res.blob();
         await load(blob, file.mime || blob.type);
@@ -78,6 +82,14 @@ export function App() {
         setBusy(false);
         setRefreshKey((k) => k + 1);
         setStatus({ kind: result.ok ? 'ok' : 'error', text: result.message });
+      },
+      onLinkProgress(message) {
+        setLinkBusy(true);
+        setStatus({ kind: 'info', text: message });
+      },
+      onLinkError(message) {
+        setLinkBusy(false);
+        setStatus({ kind: message === 'Cancelled.' ? 'info' : 'error', text: message });
       },
     });
   }, [load]);
@@ -127,6 +139,21 @@ export function App() {
     }
   };
 
+  const openLink = (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = link.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      setStatus({ kind: 'error', text: 'Paste the full link. It starts with https://' });
+      return;
+    }
+    if (!bridge.openLink(url)) {
+      setStatus({ kind: 'error', text: 'Links work only in the Android app.' });
+      return;
+    }
+    setLinkBusy(true);
+    setStatus({ kind: 'info', text: 'Opening the link…' });
+  };
+
   const openStickers = () => {
     setStatus(null);
     enterScreen('stickers');
@@ -154,10 +181,30 @@ export function App() {
 
           {!media && (
             <section className="empty">
-              <p>Share a photo, GIF, or video to Sticker Bridge from your gallery, or pick one here.</p>
-              <button className="primary" onClick={pick}>
+              <p>Share a photo, GIF, video, or post to Sticker Bridge, or pick one here.</p>
+              <button className="primary" onClick={pick} disabled={linkBusy}>
                 Pick a file
               </button>
+              <form className="link-form" onSubmit={openLink}>
+                <input
+                  type="url"
+                  inputMode="url"
+                  autoComplete="off"
+                  placeholder="Or paste a TikTok, YouTube, Reddit… link"
+                  value={link}
+                  disabled={linkBusy}
+                  onChange={(e) => setLink(e.target.value)}
+                />
+                {linkBusy ? (
+                  <button type="button" className="ghost" onClick={() => bridge.cancelLink()}>
+                    Cancel
+                  </button>
+                ) : (
+                  <button type="submit" className="secondary" disabled={!link.trim()}>
+                    Open
+                  </button>
+                )}
+              </form>
               {stickerCount > 0 && (
                 <button className="link" onClick={openStickers}>
                   Your stickers ({stickerCount})

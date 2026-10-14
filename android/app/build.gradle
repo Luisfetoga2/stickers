@@ -18,6 +18,17 @@ android {
         versionName "0.1.${buildNumber}"
         manifestPlaceholders = [contentProviderAuthority: providerAuthority]
         buildConfigField 'String', 'CONTENT_PROVIDER_AUTHORITY', "\"${providerAuthority}\""
+        // yt-dlp ships Python for each phone CPU type. Every current Android phone is 64-bit ARM.
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // yt-dlp runs Python as a program, so the native files must be unpacked on install.
+            useLegacyPackaging true
+        }
     }
 
     buildFeatures {
@@ -59,5 +70,8 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1'
     implementation 'com.google.android.gms:play-services-base:18.5.0'
+    implementation 'io.github.junkfood02.youtubedl-android:library:0.18.1'
+    // yt-dlp's library pulls an old Kotlin split into several jars. The BOM keeps all Kotlin jars on one version.
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:2.0.21')
     testImplementation 'junit:junit:4.13.2'
 }

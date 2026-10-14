@@ -39,6 +39,10 @@ export interface AppEvents {
   onOpening(): void;
   onSharedFile(file: SharedFile): void;
   onAddResult(result: AddResult): void;
+  /** A link download moved on, for example "Downloading: 40%". */
+  onLinkProgress(message: string): void;
+  /** A link download failed or was cancelled. */
+  onLinkError(message: string): void;
 }
 
 interface BackgroundResult {
@@ -64,6 +68,8 @@ interface NativeBridge {
   listStickers(): string;
   deleteSticker(packId: string, file: string): string;
   updateWhatsApp(): void;
+  openLink(url: string): void;
+  cancelLink(): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -88,6 +94,12 @@ export interface Bridge {
   deleteSticker(sticker: SavedSticker): Promise<void>;
   /** Opens WhatsApp's Add screen for each changed pack. The result arrives through onAddResult. */
   updateWhatsApp(): void;
+  /**
+   * Downloads the video of a post. Progress and errors arrive through onLinkProgress and onLinkError,
+   * and the file through onSharedFile. Returns false when links do not work here.
+   */
+  openLink(url: string): boolean;
+  cancelLink(): void;
 }
 
 function toLibrary(native: NativeLibrary): StickerLibrary {
@@ -156,6 +168,13 @@ function nativeBridge(native: NativeBridge): Bridge {
     updateWhatsApp() {
       native.updateWhatsApp();
     },
+    openLink(url) {
+      native.openLink(url);
+      return true;
+    },
+    cancelLink() {
+      native.cancelLink();
+    },
     async removeBackground(jpeg, onProgress) {
       const id = String(nextId++);
       const base64 = await blobToBase64(jpeg);
@@ -210,6 +229,10 @@ function browserBridge(): Bridge {
       needsUpdate = false;
       events?.onAddResult({ ok: true, message: 'Browser mode: WhatsApp is up to date.' });
     },
+    openLink() {
+      return false;
+    },
+    cancelLink() {},
     async removeBackground(jpeg, onProgress) {
       // A fake cutout: keeps an ellipse in the middle. The real one runs in the Android app.
       onProgress('Browser mode: making a fake cutout…');
