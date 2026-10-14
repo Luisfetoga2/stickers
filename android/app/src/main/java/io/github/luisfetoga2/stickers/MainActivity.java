@@ -69,6 +69,8 @@ public class MainActivity extends Activity {
     private LinkDownloader links;
     /** A link status that arrived before the editor was ready: [method, JSON argument]. */
     private String[] pendingLinkEvent;
+    /** The version name of a newer release on GitHub, waiting for the editor. */
+    private String pendingUpdate;
     /** MIME type of the file in sharedDir. Read on a WebView thread. */
     private volatile String sharedMime = "application/octet-stream";
 
@@ -95,6 +97,10 @@ public class MainActivity extends Activity {
         remover = new BackgroundRemover(this, io);
         links = new LinkDownloader(this);
         links.warmUp();
+        UpdateChecker.check(this, BuildConfig.VERSION_CODE, build -> main.post(() -> {
+            pendingUpdate = UpdateChecker.versionName(build);
+            deliverShare();
+        }));
 
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
@@ -435,6 +441,10 @@ public class MainActivity extends Activity {
     }
 
     private void deliverShare() {
+        if (editorReady && pendingUpdate != null) {
+            callEditor("onUpdateAvailable", JSONObject.quote(pendingUpdate));
+            pendingUpdate = null;
+        }
         if (editorReady && pendingLinkEvent != null) {
             callEditor(pendingLinkEvent[0], pendingLinkEvent[1]);
             pendingLinkEvent = null;
@@ -644,6 +654,24 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void pickFile() {
             main.post(MainActivity.this::pickMedia);
+        }
+
+        /** The installed version, such as "0.1.12". */
+        @JavascriptInterface
+        public String appVersion() {
+            return BuildConfig.VERSION_NAME;
+        }
+
+        /** Opens the latest APK in the browser, which downloads it. Android then offers to install it. */
+        @JavascriptInterface
+        public void openUpdate() {
+            main.post(() -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.DOWNLOAD_URL)));
+                } catch (ActivityNotFoundException e) {
+                    sendAddResult(false, "No browser could open the download: " + e.getMessage());
+                }
+            });
         }
 
         @JavascriptInterface

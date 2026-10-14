@@ -11,6 +11,8 @@ It turns a photo, a GIF, a video, or a post link into a sticker and adds it to W
 4. If Play Protect warns about an unknown app, tap "More details", then "Install anyway".
 
 A new APK installs over the old one and keeps your stickers.
+When GitHub has a newer version, the start screen shows it with a Download button.
+The app asks GitHub at most every 6 hours.
 The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 
 ## Make a sticker
@@ -66,7 +68,7 @@ WhatsApp needs 3 to 30 stickers in a pack, so the app fills a new pack with copi
 When a pack has 30 stickers, the next sticker starts a new pack.
 
 Photos, videos, and background removal stay on the phone.
-The app uses the internet only for post links, for yt-dlp updates, and for the one-time ML Kit model download.
+The app uses the internet only for post links, for yt-dlp updates, for the update notice, and for the one-time ML Kit model download.
 
 ## Build
 

@@ -43,6 +43,8 @@ export interface AppEvents {
   onLinkProgress(message: string): void;
   /** A link download failed or was cancelled. */
   onLinkError(message: string): void;
+  /** GitHub has a newer APK, for example "0.1.13". */
+  onUpdateAvailable(version: string): void;
 }
 
 interface BackgroundResult {
@@ -70,6 +72,8 @@ interface NativeBridge {
   updateWhatsApp(): void;
   openLink(url: string): void;
   cancelLink(): void;
+  appVersion(): string;
+  openUpdate(): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -100,6 +104,10 @@ export interface Bridge {
    */
   openLink(url: string): boolean;
   cancelLink(): void;
+  /** The installed version, or null in a desktop browser. */
+  appVersion(): string | null;
+  /** Opens the latest APK download in the phone's browser. */
+  openUpdate(): void;
 }
 
 function toLibrary(native: NativeLibrary): StickerLibrary {
@@ -175,6 +183,12 @@ function nativeBridge(native: NativeBridge): Bridge {
     cancelLink() {
       native.cancelLink();
     },
+    appVersion() {
+      return native.appVersion();
+    },
+    openUpdate() {
+      native.openUpdate();
+    },
     async removeBackground(jpeg, onProgress) {
       const id = String(nextId++);
       const base64 = await blobToBase64(jpeg);
@@ -233,6 +247,10 @@ function browserBridge(): Bridge {
       return false;
     },
     cancelLink() {},
+    appVersion() {
+      return null;
+    },
+    openUpdate() {},
     async removeBackground(jpeg, onProgress) {
       // A fake cutout: keeps an ellipse in the middle. The real one runs in the Android app.
       onProgress('Browser mode: making a fake cutout…');

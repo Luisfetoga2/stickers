@@ -36,6 +36,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [link, setLink] = useState('');
   const [linkBusy, setLinkBusy] = useState(false);
+  const [newVersion, setNewVersion] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (blob: Blob, mime: string, name = '') => {
@@ -91,6 +92,9 @@ export function App() {
       onLinkError(message) {
         setLinkBusy(false);
         setStatus({ kind: message === 'Cancelled.' ? 'info' : 'error', text: message });
+      },
+      onUpdateAvailable(version) {
+        setNewVersion(version);
       },
     });
   }, [load]);
@@ -212,6 +216,19 @@ export function App() {
                 </button>
               )}
             </section>
+          )}
+          {!media && (
+            <footer className="version">
+              {newVersion && (
+                <div className="update">
+                  <span>Version {newVersion} is out.</span>
+                  <button className="secondary" onClick={() => bridge.openUpdate()}>
+                    Download
+                  </button>
+                </div>
+              )}
+              {bridge.appVersion() && <span className="hint">Version {bridge.appVersion()}</span>}
+            </footer>
           )}
           {media?.kind === 'photo' && <PhotoEditor key={media.id} cutout={media.cutout} {...editorProps} />}
           {media?.kind === 'clip' && <ClipEditor key={media.id} clip={media.clip} {...editorProps} />}
