@@ -18,7 +18,12 @@ interface Props {
   onBrushMove(from: Point, to: Point): void;
   /** The finger lifted. completed is false when a second finger turned the stroke into a move. */
   onBrushEnd?(completed: boolean): void;
+  /** A highlighted line over the image, in sticker pixels, such as the Keep or Remove mark. */
+  mark?: { points: Point[]; color: string } | null;
 }
+
+/** Width of the Keep and Remove mark, in sticker pixels. */
+const MARK_WIDTH = 16;
 
 type Gesture =
   | { kind: 'brush'; last: Point }
@@ -30,7 +35,7 @@ type Gesture =
  * Two fingers always move, zoom, and rotate.
  */
 export function Stage(props: Props) {
-  const { image, width, height, version, transform, onChange, tool, brushSize } = props;
+  const { image, width, height, version, transform, onChange, tool, brushSize, mark } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -44,6 +49,24 @@ export function Stage(props: Props) {
     if (!ctx) return;
     ctx.clearRect(0, 0, SIZE, SIZE);
     draw(ctx, image, width, height, transform);
+    if (mark && mark.points.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = mark.color;
+      ctx.fillStyle = mark.color;
+      ctx.lineWidth = MARK_WIDTH;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(mark.points[0].x, mark.points[0].y);
+      for (const p of mark.points.slice(1)) ctx.lineTo(p.x, p.y);
+      if (mark.points.length === 1) {
+        ctx.arc(mark.points[0].x, mark.points[0].y, MARK_WIDTH / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
     if (cursor && tool !== 'move') {
       ctx.save();
       ctx.beginPath();
@@ -56,7 +79,7 @@ export function Stage(props: Props) {
       ctx.stroke();
       ctx.restore();
     }
-  }, [image, width, height, version, transform, cursor, tool, brushSize]);
+  }, [image, width, height, version, transform, cursor, tool, brushSize, mark]);
 
   // React wheel listeners are passive, so the page would scroll too. Desktop testing only.
   useEffect(() => {

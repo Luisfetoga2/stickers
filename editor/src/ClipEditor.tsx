@@ -57,6 +57,12 @@ function nearestFps(fps: number): number {
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+/** How strongly the removed background shows behind the cutout in Keep and Restore. Screen only. */
+const GHOST_ALPHA = 0.3;
+
+/** The mark colors: green adds, red takes away. */
+const MARK_COLORS = { keep: 'rgba(46, 204, 113, 0.75)', remove: 'rgba(231, 76, 60, 0.75)' } as const;
+
 /** Scales a mask to another size, by nearest pixel. Magic Touch answers at the frame's size, so this rarely runs. */
 function fitMask(data: Uint8Array, w: number, h: number, width: number, height: number): Uint8Array {
   if (w === width && h === height) return data;
@@ -127,6 +133,10 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
   useEffect(() => () => cutout?.dispose(), [cutout]);
 
+  // Keep and Restore bring things back, so the screen shows the removed background faintly while they are on.
+  const ghostRef = useRef(false);
+  ghostRef.current = matte !== 'none' && (tool === 'keep' || tool === 'restore');
+
   // The play loop and the encoder read the matte through this ref, so slider changes apply at once.
   const matteRef = useRef({ matte, chroma, cutout });
   matteRef.current = { matte, chroma, cutout };
@@ -151,34 +161,53 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   }, [work]);
 
   /** Keys the frame in `raw` with the current settings into `out`. */
-  const keyFromRaw = useCallback((): HTMLCanvasElement => {
-    const pixels = work.rawCtx.getImageData(0, 0, work.width, work.height);
-    const settings = matteRef.current.chroma;
-    if (settings) chromaKey(pixels.data, settings);
-    work.outCtx.putImageData(pixels, 0, 0);
-    applyKeep();
-    return work.out;
-  }, [work, applyKeep]);
+  /** Draws the removed background faintly behind the cutout, so the user sees where to bring things back. */
+  const drawGhost = useCallback(
+    (background: CanvasImageSource) => {
+      const ctx = work.outCtx;
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.globalAlpha = GHOST_ALPHA;
+      ctx.drawImage(background, 0, 0, work.width, work.height);
+      ctx.restore();
+    },
+    [work],
+  );
+
+  const keyFromRaw = useCallback(
+    (display = false): HTMLCanvasElement => {
+      const pixels = work.rawCtx.getImageData(0, 0, work.width, work.height);
+      const settings = matteRef.current.chroma;
+      if (settings) chromaKey(pixels.data, settings);
+      work.outCtx.putImageData(pixels, 0, 0);
+      applyKeep();
+      if (display && ghostRef.current) drawGhost(work.raw);
+      return work.out;
+    },
+    [work, applyKeep, drawGhost],
+  );
 
   /** Turns a source frame, or a cut-out frame index, into what the sticker shows. */
+  // display is true only for the screen. The faded background never reaches the sticker.
   const processFrame = useCallback(
-    (source: CanvasImageSource | null, index: number): CanvasImageSource => {
+    (source: CanvasImageSource | null, index: number, display = false): CanvasImageSource => {
       const { matte: m, cutout: c } = matteRef.current;
       if (m === 'ai' && c) {
         work.outCtx.clearRect(0, 0, work.width, work.height);
         work.outCtx.drawImage(c.frame(index), 0, 0);
         applyKeep();
+        if (display && ghostRef.current) drawGhost(c.source(index));
         return work.out;
       }
       if (!source) throw new Error('No frame to show.');
       if (m === 'chroma') {
         work.rawCtx.clearRect(0, 0, work.width, work.height);
         work.rawCtx.drawImage(source, 0, 0, work.width, work.height);
-        return keyFromRaw();
+        return keyFromRaw(display);
       }
       return source;
     },
-    [work, applyKeep, keyFromRaw],
+    [work, applyKeep, keyFromRaw, drawGhost],
   );
 
   // Shows the exact frame at a time. While a seek runs, only the newest request waits, so dragging stays responsive.
@@ -190,7 +219,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       if (c) {
         const index = c.indexAt(seconds);
         shownIndex.current = index;
-        paint(processFrame(null, index));
+        paint(processFrame(null, index, true));
         setShownTime(c.times[index]);
         return;
       }
@@ -202,7 +231,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           const t = pendingTime.current;
           pendingTime.current = null;
           try {
-            paint(processFrame(await clip.frameAt(t), 0));
+            paint(processFrame(await clip.frameAt(t), 0, true));
             setShownTime(t);
           } catch {
             // A failed seek leaves the last frame on screen.
@@ -217,8 +246,8 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   /** Redraws the frame on screen after a matte or brush change, without seeking. */
   const repaint = useCallback(() => {
     const { matte: m } = matteRef.current;
-    if (m === 'ai') paint(processFrame(null, shownIndex.current));
-    else if (m === 'chroma') paint(keyFromRaw());
+    if (m === 'ai') paint(processFrame(null, shownIndex.current, true));
+    else if (m === 'chroma') paint(keyFromRaw(true));
   }, [paint, processFrame, keyFromRaw]);
 
   useEffect(() => {
@@ -227,8 +256,8 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
   useEffect(() => {
     if (!playing) repaint();
-    // Repaint only when the green screen settings change.
-  }, [chroma]);
+    // Repaint when the green screen settings change, and when the tool changes the faded background.
+  }, [chroma, tool]);
 
   // Plays the trimmed clip in a loop inside the stage, at the chosen frame rate.
   // A timer drives it instead of requestAnimationFrame, which pauses in some embedded views.
@@ -246,7 +275,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         if (index !== last) {
           last = index;
           shownIndex.current = index;
-          paint(processFrame(null, index));
+          paint(processFrame(null, index, true));
           setShownTime(cutout.times[index]);
         }
         timer = window.setTimeout(tick, 15);
@@ -281,7 +310,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           const index = Math.floor((t - start) * fps);
           if (index !== lastIndex) {
             lastIndex = index;
-            paint(processFrame(clip.current(), 0));
+            paint(processFrame(clip.current(), 0, true));
             setShownTime(t);
           }
         }
@@ -453,6 +482,8 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
   /** The Keep or Remove scribble in progress, in work pixels. */
   const scribble = useRef<Point[]>([]);
+  /** The same scribble in sticker pixels, drawn on the stage until Magic Touch finishes. */
+  const [mark, setMark] = useState<{ points: Point[]; mode: 'keep' | 'remove' } | null>(null);
   /** One undo list for brush strokes and Keep or Remove, newest last. */
   const history = useRef<Array<'brush' | 'object'>>([]);
 
@@ -463,8 +494,10 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       return;
     }
     if (tool === 'keep' || tool === 'remove') {
+      if (working) return;
       setPlaying(false);
       scribble.current = [toWork(p)];
+      setMark({ points: [p], mode: tool });
       return;
     }
     if (tool !== 'erase' && tool !== 'restore') return;
@@ -480,9 +513,13 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
   const onBrushMove = (from: Point, to: Point) => {
     if (tool === 'keep' || tool === 'remove') {
+      if (scribble.current.length === 0) return;
       const p = toWork(to);
       const last = scribble.current[scribble.current.length - 1];
-      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= SCRIBBLE_STEP) scribble.current.push(p);
+      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= SCRIBBLE_STEP) {
+        scribble.current.push(p);
+        setMark((m) => (m ? { ...m, points: [...m.points, to] } : m));
+      }
       return;
     }
     if (matte === 'none' || (tool !== 'erase' && tool !== 'restore')) return;
@@ -494,6 +531,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     const points = scribble.current;
     scribble.current = [];
     if (completed && points.length > 0 && (tool === 'keep' || tool === 'remove')) void markObject(points, tool);
+    else setMark(null);
   };
 
   /**
@@ -511,6 +549,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       const began = performance.now();
       let modelMs = 0;
       let delegate = '';
+      let timing = '';
       const frameCanvas = newCanvas(width, height);
       const frameCtx = ctx2d(frameCanvas);
       const result = await trackObject(
@@ -527,7 +566,9 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           const stroke = strokePoints(framePoints.map((p) => ({ x: p.x / width, y: p.y / height })));
           const result = await bridge.segmentObject(jpeg, stroke, (text) => setStatus({ kind: 'info', text }));
           modelMs += result.modelMs;
-          delegate = result.delegate;
+          // The first use times the GPU and the CPU once, and says so as "CPU, timed: GPU 3.40 s, CPU 1.20 s".
+          if (result.delegate.includes('timed')) timing = ` Magic Touch picked the ${result.delegate}.`;
+          delegate = result.delegate.split(',')[0];
           return fitMask(result.mask, result.width, result.height, width, height);
         },
         (done) => {
@@ -555,13 +596,15 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           `${mode === 'keep' ? 'Kept' : 'Removed'} it in ${result.found} of ${count} frames.` +
           (missed
             ? ' In the other frames it left the picture or changed too much. Go to one of them and mark it again.'
-            : ''),
+            : '') +
+          timing,
       });
     } catch (err) {
       setStatus(controller.signal.aborted ? { kind: 'info', text: 'Cancelled.' } : { kind: 'error', text: errorText(err) });
     } finally {
       abortRef.current = null;
       setWorking(null);
+      setMark(null);
     }
   };
 
@@ -726,6 +769,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         onBrushStart={onBrushStart}
         onBrushMove={onBrushMove}
         onBrushEnd={onBrushEnd}
+        mark={mark && { points: mark.points, color: MARK_COLORS[mark.mode] }}
       />
 
       <div className="row playbar">
