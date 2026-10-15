@@ -5,6 +5,7 @@ import { STATIC_LIMIT, fitToLimit, renderSticker, webpEncoder } from './encode';
 import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
+import { StatusLine } from './StatusLine';
 import { centered, fitBox, toSource, type Point, type Transform } from './transform';
 import type { EditorProps } from './types';
 
@@ -23,7 +24,7 @@ const HINTS: Record<Tool, string> = {
   remove: '',
 };
 
-export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { cutout: Cutout }) {
+export function PhotoEditor({ cutout, busy, status, setStatus, onAdd }: EditorProps & { cutout: Cutout }) {
   const [version, setVersion] = useState(0);
   const [transform, setTransform] = useState<Transform>(() => centered(cutout.width, cutout.height));
   const [tool, setTool] = useState<Tool>('move');
@@ -106,19 +107,25 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
 
   return (
     <>
-      <Stage
-        image={cutout.view}
-        width={cutout.width}
-        height={cutout.height}
-        version={version}
-        transform={transform}
-        onChange={setTransform}
-        tool={tool}
-        brushSize={brushSize}
-        onBrushStart={onBrushStart}
-        onBrushMove={onBrushMove}
-      />
-      <p className="hint">{HINTS[tool]}</p>
+      <div className="pinned">
+        <div className="stage-wrap">
+          <Stage
+            image={cutout.view}
+            width={cutout.width}
+            height={cutout.height}
+            version={version}
+            transform={transform}
+            onChange={setTransform}
+            tool={tool}
+            brushSize={brushSize}
+            onBrushStart={onBrushStart}
+            onBrushMove={onBrushMove}
+          />
+          {removing && <StatusLine status={status} working />}
+        </div>
+        <p className="hint">{HINTS[tool]}</p>
+        {!removing && <StatusLine status={status} working={false} />}
+      </div>
 
       <div className="row">
         <button className="secondary grow" onClick={removeBackground} disabled={locked}>
@@ -164,9 +171,11 @@ export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { 
         )}
       </section>
 
-      <button className="primary add" onClick={add} disabled={locked}>
-        {bridge.isNative ? 'Add to WhatsApp' : 'Download sticker'}
-      </button>
+      <div className="bottom-bar">
+        <button className="primary add" onClick={add} disabled={locked}>
+          {bridge.isNative ? 'Add to WhatsApp' : 'Download sticker'}
+        </button>
+      </div>
     </>
   );
 }

@@ -20,6 +20,7 @@ import { Mask, ctx2d, newCanvas } from './mask';
 import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
+import { StatusLine } from './StatusLine';
 import { followOffsets } from './follow';
 import { trackObject } from './tapTrack';
 import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
@@ -40,6 +41,16 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
 ];
 
 /** After an AI cutout, Keep and Remove come first: they fix whole objects in every frame. */
+type Tab = 'cutout' | 'trim' | 'frame' | 'size';
+
+/** The controls under the stage, one group at a time, so the stage and the progress stay in view. */
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'cutout', label: 'Cutout' },
+  { id: 'trim', label: 'Trim' },
+  { id: 'frame', label: 'Frame' },
+  { id: 'size', label: 'Size' },
+];
+
 const AI_TOOLS: Array<{ id: Tool; label: string }> = [
   { id: 'move', label: 'Move' },
   { id: 'keep', label: 'Keep' },
@@ -93,7 +104,7 @@ function SizeLine({ estimate }: { estimate: number }) {
 }
 
 /** Trim, frame, remove the background of, and encode a video or GIF into an animated sticker. */
-export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { clip: Clip }) {
+export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps & { clip: Clip }) {
   const still = useMemo(() => newCanvas(clip.width, clip.height), [clip]);
 
   // Green screen and AI cutout work at a smaller size. `raw` holds the current frame before keying.
@@ -118,6 +129,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const [chroma, setChroma] = useState<ChromaSettings | null>(null);
   const [cutout, setCutout] = useState<ClipCutout | null>(null);
   const [tool, setTool] = useState<Tool>('move');
+  const [tab, setTab] = useState<Tab>('cutout');
   const [follow, setFollow] = useState(false);
   /** The last Check size result, with the settings it belongs to. */
   const [prepared, setPrepared] = useState<{ key: string; data: Prepared } | null>(null);
@@ -487,14 +499,20 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   /** One undo list for brush strokes and Keep or Remove, newest last. */
   const history = useRef<Array<'brush' | 'object'>>([]);
 
+  /**
+   * True for a touch that began while a task ran. The whole touch is ignored, so it cannot draw a second mark
+   * or paint the frames while Magic Touch or the AI cutout changes them.
+   */
+  const ignoredTouch = useRef(false);
+
   const onBrushStart = (p: Point) => {
-    if (matte === 'none') return;
+    ignoredTouch.current = locked;
+    if (locked || matte === 'none') return;
     if (tool === 'pick') {
       pickColor(p);
       return;
     }
     if (tool === 'keep' || tool === 'remove') {
-      if (working) return;
       setPlaying(false);
       scribble.current = [toWork(p)];
       setMark({ points: [p], mode: tool });
@@ -512,6 +530,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   };
 
   const onBrushMove = (from: Point, to: Point) => {
+    if (ignoredTouch.current) return;
     if (tool === 'keep' || tool === 'remove') {
       if (scribble.current.length === 0) return;
       const p = toWork(to);
@@ -528,6 +547,11 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   };
 
   const onBrushEnd = (completed: boolean) => {
+    if (ignoredTouch.current) {
+      // The mark of the running task stays on screen.
+      ignoredTouch.current = false;
+      return;
+    }
     const points = scribble.current;
     scribble.current = [];
     if (completed && points.length > 0 && (tool === 'keep' || tool === 'remove')) void markObject(points, tool);
@@ -751,236 +775,288 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   const length = end - start;
   const brushing = matte !== 'none' && (tool === 'erase' || tool === 'restore');
 
+  const brushHint =
+    working
+      ? 'Wait for this to finish, or tap Cancel.'
+      : tool === 'pick'
+        ? 'Tap the green screen in the video.'
+        : tool === 'keep'
+          ? 'Tap or scribble on something to keep it in every frame.'
+          : tool === 'remove'
+            ? 'Tap or scribble on something to remove it from every frame.'
+            : brushing
+              ? 'One finger paints on every frame. Two fingers move and zoom.'
+              : 'Drag to move. Pinch to zoom and rotate.';
+
+  const tools = matte !== 'none' && (
+    <div className="row">
+      <div
+        className={`segmented grow${matte === 'ai' ? ' tools-5' : ''}`}
+        role="tablist"
+        style={{ gridTemplateColumns: `repeat(${matte === 'ai' ? 5 : 3}, 1fr)` }}
+      >
+        {(matte === 'ai' ? AI_TOOLS : TOOLS).map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tool === t.id}
+            className={tool === t.id ? 'on' : ''}
+            disabled={locked}
+            onClick={() => setTool(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {matte !== 'ai' && (
+        <button className="ghost" onClick={undo} disabled={history.current.length === 0 || locked}>
+          Undo
+        </button>
+      )}
+    </div>
+  );
+
+  const brushSlider = brushing && (
+    <section className="controls">
+      <SliderField label="Brush" value={brushSize} min={4} max={80} decimals={0} onChange={setBrushSize} />
+    </section>
+  );
+
   return (
     <>
-      <Stage
-        image={still}
-        width={clip.width}
-        height={clip.height}
-        version={version}
-        transform={displayTransform}
-        onChange={onStageChange}
-        tool={matte === 'none' ? 'move' : tool}
-        brushSize={tool === 'pick' || tool === 'keep' || tool === 'remove' ? 8 : brushSize}
-        onBrushStart={onBrushStart}
-        onBrushMove={onBrushMove}
-        onBrushEnd={onBrushEnd}
-        mark={mark && { points: mark.points, color: MARK_COLORS[mark.mode] }}
-      />
+      <div className="pinned">
+        <div className="stage-wrap">
+          <Stage
+            image={still}
+            width={clip.width}
+            height={clip.height}
+            version={version}
+            transform={displayTransform}
+            onChange={onStageChange}
+            tool={matte === 'none' ? 'move' : tool}
+            brushSize={tool === 'pick' || tool === 'keep' || tool === 'remove' ? 8 : brushSize}
+            onBrushStart={onBrushStart}
+            onBrushMove={onBrushMove}
+            onBrushEnd={onBrushEnd}
+            mark={mark && { points: mark.points, color: MARK_COLORS[mark.mode] }}
+          />
+          {working && <StatusLine status={status} working onCancel={cancel} />}
+        </div>
 
-      <div className="row playbar">
-        <button className="secondary" onClick={() => setPlaying((p) => !p)} disabled={locked}>
-          {playing ? 'Pause' : 'Play'}
-        </button>
-        <p className="hint">
-          {shownTime.toFixed(2)} s of {clip.duration.toFixed(1)} s.{' '}
-          {tool === 'pick'
-            ? 'Tap the green screen in the video.'
-            : tool === 'keep'
-              ? 'Tap or scribble on something to keep it in every frame.'
-              : tool === 'remove'
-                ? 'Tap or scribble on something to remove it from every frame.'
-                : brushing
-              ? 'One finger paints on every frame. Two fingers move and zoom.'
-              : 'Drag to move. Pinch to zoom and rotate.'}
-        </p>
+        <div className="row playbar">
+          <button className="secondary" onClick={() => setPlaying((p) => !p)} disabled={locked}>
+            {playing ? 'Pause' : 'Play'}
+          </button>
+          <p className="hint">
+            {shownTime.toFixed(2)} s of {clip.duration.toFixed(1)} s. {brushHint}
+          </p>
+        </div>
+        {!working && <StatusLine status={status} working={false} />}
       </div>
 
-      {matte === 'none' && (
-        <div className="row">
-          <button className="secondary grow" onClick={startGreenScreen} disabled={locked}>
-            Green screen
+      <div className="tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            className={tab === t.id ? 'on' : ''}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
           </button>
-          <button className="secondary grow" onClick={startAiCutout} disabled={locked}>
-            AI cutout
-          </button>
-        </div>
-      )}
+        ))}
+      </div>
 
-      {matte === 'chroma' && chroma && (
-        <section className="controls">
-          <div className="row key-row">
-            <span className="swatch" style={{ background: toHex(chroma.key) }} />
-            <span className="grow">Screen color</span>
-            <button className="ghost" onClick={() => setTool(tool === 'pick' ? 'move' : 'pick')} disabled={locked}>
-              {tool === 'pick' ? 'Tap the video' : 'Pick color'}
-            </button>
-          </div>
-          <SliderField
-            label="Tolerance"
-            value={chroma.tolerance}
-            min={0}
-            max={1}
-            decimals={2}
-            onChange={(v) => setChroma({ ...chroma, tolerance: v })}
-          />
-          <SliderField
-            label="Softness"
-            value={chroma.softness}
-            min={0}
-            max={0.6}
-            decimals={2}
-            onChange={(v) => setChroma({ ...chroma, softness: v })}
-          />
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={chroma.despill}
-              onChange={(e) => setChroma({ ...chroma, despill: e.target.checked })}
-            />
-            <span>Remove the green tint at the edges</span>
-          </label>
-          <div className="row">
-            <button className="ghost" onClick={turnOffMatte} disabled={locked}>
-              Turn off green screen
-            </button>
-          </div>
-        </section>
-      )}
+      {tab === 'cutout' && (
+        <div className="panel">
+          {matte === 'none' && (
+            <>
+              <div className="row">
+                <button className="secondary grow" onClick={startGreenScreen} disabled={locked}>
+                  Green screen
+                </button>
+                <button className="secondary grow" onClick={startAiCutout} disabled={locked}>
+                  AI cutout
+                </button>
+              </div>
+              <p className="hint">Remove the background with a green screen, or with AI for any other video.</p>
+            </>
+          )}
 
-      {matte === 'ai' && (
-        <>
-          <div className="row">
-            <button className="ghost grow" onClick={turnOffMatte} disabled={locked}>
-              Bring back the background
-            </button>
-            <button className="ghost" onClick={undo} disabled={history.current.length === 0 || locked}>
-              Undo
-            </button>
-          </div>
-          <section className="controls">
-            <label className="check">
-              <input type="checkbox" checked={follow} disabled={locked} onChange={(e) => setFollow(e.target.checked)} />
-              <span>Follow the subject</span>
-            </label>
-          </section>
-        </>
-      )}
+          {matte === 'chroma' && chroma && (
+            <>
+              {tools}
+              {brushSlider}
+              <section className="controls">
+                <div className="row key-row">
+                  <span className="swatch" style={{ background: toHex(chroma.key) }} />
+                  <span className="grow">Screen color</span>
+                  <button className="ghost" onClick={() => setTool(tool === 'pick' ? 'move' : 'pick')} disabled={locked}>
+                    {tool === 'pick' ? 'Tap the video' : 'Pick color'}
+                  </button>
+                </div>
+                <SliderField
+                  label="Tolerance"
+                  value={chroma.tolerance}
+                  min={0}
+                  max={1}
+                  decimals={2}
+                  onChange={(v) => setChroma({ ...chroma, tolerance: v })}
+                />
+                <SliderField
+                  label="Softness"
+                  value={chroma.softness}
+                  min={0}
+                  max={0.6}
+                  decimals={2}
+                  onChange={(v) => setChroma({ ...chroma, softness: v })}
+                />
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={chroma.despill}
+                    onChange={(e) => setChroma({ ...chroma, despill: e.target.checked })}
+                  />
+                  <span>Remove the green tint at the edges</span>
+                </label>
+                <div className="row">
+                  <button className="ghost" onClick={turnOffMatte} disabled={locked}>
+                    Turn off green screen
+                  </button>
+                </div>
+              </section>
+            </>
+          )}
 
-      {matte !== 'none' && (
-        <div className="row">
-          <div className={`segmented grow${matte === 'ai' ? ' tools-5' : ''}`} role="tablist" style={{ gridTemplateColumns: `repeat(${matte === 'ai' ? 5 : 3}, 1fr)` }}>
-            {(matte === 'ai' ? AI_TOOLS : TOOLS).map((t) => (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={tool === t.id}
-                className={tool === t.id ? 'on' : ''}
-                onClick={() => setTool(t.id)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-          {matte !== 'ai' && (
-            <button className="ghost" onClick={undo} disabled={history.current.length === 0 || locked}>
-              Undo
-            </button>
+          {matte === 'ai' && (
+            <>
+              {tools}
+              {brushSlider}
+              <div className="row">
+                <button className="ghost grow" onClick={turnOffMatte} disabled={locked}>
+                  Bring back the background
+                </button>
+                <button className="ghost" onClick={undo} disabled={history.current.length === 0 || locked}>
+                  Undo
+                </button>
+              </div>
+              <section className="controls">
+                <label className="check">
+                  <input type="checkbox" checked={follow} disabled={locked} onChange={(e) => setFollow(e.target.checked)} />
+                  <span>Follow the subject</span>
+                </label>
+              </section>
+            </>
           )}
         </div>
       )}
 
-      <section className="controls">
-        <SliderField
-          label="Start s"
-          value={start}
-          min={0}
-          max={clip.duration}
-          decimals={2}
-          disabled={locked || matte === 'ai'}
-          onChange={changeStart}
-        />
-        <SliderField
-          label="End s"
-          value={end}
-          min={0}
-          max={clip.duration}
-          decimals={2}
-          disabled={locked || matte === 'ai'}
-          onChange={changeEnd}
-        />
-        <p className="hint">
-          {matte === 'ai'
-            ? 'Trim and frame rate are locked while the AI cutout is on. Bring the background back to change them.'
-            : `Length ${length.toFixed(1)} s. WhatsApp allows up to ${MAX_SECONDS} s, and shorter clips look sharper.`}
-        </p>
-        <div className="row">
-          <button className="ghost" onClick={findLoopPoint} disabled={locked || matte === 'ai'}>
-            Find loop
-          </button>
-        </div>
-        <div className="segmented fps" role="tablist" aria-label="Frame rate">
-          {FPS_CHOICES.map((f) => (
-            <button
-              key={f}
-              role="tab"
-              aria-selected={fps === f}
-              className={fps === f ? 'on' : ''}
-              disabled={locked || matte === 'ai'}
-              onClick={() => setFps(f)}
-            >
-              {f} fps
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="controls">
-        {brushing ? (
-          <SliderField label="Brush" value={brushSize} min={4} max={80} decimals={0} onChange={setBrushSize} />
-        ) : (
-          <MoveControls
-            transform={transform}
-            onChange={setTransform}
-            width={clip.width}
-            height={clip.height}
-            onFrame={(mode) => setTransform({ ...centered(clip.width, clip.height, mode), flip: transform.flip })}
-          />
-        )}
-      </section>
-
-      <section className="controls">
-        {fresh && quality !== null ? (
-          <>
+      {tab === 'trim' && (
+        <div className="panel">
+          <section className="controls">
             <SliderField
-              label="Sharpness"
-              value={Math.round(quality * 100)}
-              min={25}
-              max={95}
-              decimals={0}
-              disabled={locked}
-              // The slider moves between the levels, lowest on the left. The box snaps to the nearest level.
-              toSlider={(v) => LEVELS_UP.indexOf(nearestLevel(v / 100))}
-              fromSlider={(p) => LEVELS_UP[Math.round(p)] * 100}
-              sliderMin={0}
-              sliderMax={LEVELS_UP.length - 1}
-              onChange={(v) => setQuality(nearestLevel(v / 100))}
+              label="Start s"
+              value={start}
+              min={0}
+              max={clip.duration}
+              decimals={2}
+              disabled={locked || matte === 'ai'}
+              onChange={changeStart}
             />
-            <SizeLine estimate={fresh.estimates.get(quality) ?? 0} />
-          </>
-        ) : (
-          <div className="row size-row">
-            <button className="ghost" onClick={checkSize} disabled={locked}>
-              Check size
-            </button>
+            <SliderField
+              label="End s"
+              value={end}
+              min={0}
+              max={clip.duration}
+              decimals={2}
+              disabled={locked || matte === 'ai'}
+              onChange={changeEnd}
+            />
             <p className="hint">
-              {prepared
-                ? 'The settings changed. Check the size again.'
-                : `See how sharp this sticker can be at ${fps} fps.`}
+              {matte === 'ai'
+                ? 'Trim and frame rate are locked while the AI cutout is on. Bring the background back to change them.'
+                : `Length ${length.toFixed(1)} s. WhatsApp allows up to ${MAX_SECONDS} s, and shorter clips look sharper.`}
             </p>
-          </div>
-        )}
-      </section>
+            <div className="row">
+              <button className="ghost" onClick={findLoopPoint} disabled={locked || matte === 'ai'}>
+                Find loop
+              </button>
+            </div>
+            <div className="segmented fps" role="tablist" aria-label="Frame rate">
+              {FPS_CHOICES.map((f) => (
+                <button
+                  key={f}
+                  role="tab"
+                  aria-selected={fps === f}
+                  className={fps === f ? 'on' : ''}
+                  disabled={locked || matte === 'ai'}
+                  onClick={() => setFps(f)}
+                >
+                  {f} fps
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
 
-      {working ? (
-        <button className="ghost add" onClick={cancel}>
-          Cancel
-        </button>
-      ) : (
+      {tab === 'frame' && (
+        <div className="panel">
+          <section className="controls">
+            <MoveControls
+              transform={transform}
+              onChange={setTransform}
+              width={clip.width}
+              height={clip.height}
+              onFrame={(mode) => setTransform({ ...centered(clip.width, clip.height, mode), flip: transform.flip })}
+            />
+          </section>
+        </div>
+      )}
+
+      {tab === 'size' && (
+        <div className="panel">
+          <section className="controls">
+            {fresh && quality !== null ? (
+              <>
+                <SliderField
+                  label="Sharpness"
+                  value={Math.round(quality * 100)}
+                  min={25}
+                  max={95}
+                  decimals={0}
+                  disabled={locked}
+                  // The slider moves between the levels, lowest on the left. The box snaps to the nearest level.
+                  toSlider={(v) => LEVELS_UP.indexOf(nearestLevel(v / 100))}
+                  fromSlider={(p) => LEVELS_UP[Math.round(p)] * 100}
+                  sliderMin={0}
+                  sliderMax={LEVELS_UP.length - 1}
+                  onChange={(v) => setQuality(nearestLevel(v / 100))}
+                />
+                <SizeLine estimate={fresh.estimates.get(quality) ?? 0} />
+              </>
+            ) : (
+              <div className="row size-row">
+                <button className="ghost" onClick={checkSize} disabled={locked}>
+                  Check size
+                </button>
+                <p className="hint">
+                  {prepared
+                    ? 'The settings changed. Check the size again.'
+                    : `See how sharp this sticker can be at ${fps} fps.`}
+                </p>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      <div className="bottom-bar">
         <button className="primary add" onClick={add} disabled={locked}>
           {bridge.isNative ? 'Add to WhatsApp' : 'Download sticker'}
         </button>
-      )}
+      </div>
     </>
   );
 }

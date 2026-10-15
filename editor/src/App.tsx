@@ -184,7 +184,7 @@ export function App() {
     setShowStickers(true);
   };
 
-  const editorProps = { busy, setStatus, onAdd };
+  const editorProps = { busy, status, setStatus, onAdd };
 
   return (
     <main className="app">
@@ -279,7 +279,7 @@ export function App() {
         </>
       )}
 
-      {status && <p className={`status ${status.kind}`}>{status.text}</p>}
+      {status && (showStickers || !media) && <p className={`status ${status.kind}`}>{status.text}</p>}
     </main>
   );
 }
