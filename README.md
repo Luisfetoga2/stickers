@@ -41,8 +41,9 @@ The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 - For any other video, tap "AI cutout". Trim and frame rate lock while the cutout is on.
 - After an AI cutout, use Keep and Remove to fix whole objects. Tap or scribble on something in any frame.
   The app finds that object with Magic Touch and follows it through the other frames.
+  A tap takes the whole object, and a scribble takes what it covers.
   Keep adds it to the cutout, and Remove cuts it out.
-  The first use downloads the Magic Touch model, about 30 MB, once.
+  The first use downloads the Magic Touch model, about 38 MB, once.
 - Erase and Restore change every frame at once.
 - After an AI cutout, turn on "Follow the subject" to keep the subject in one place while it moves.
 
@@ -106,6 +107,12 @@ The Java tests run in GitHub Actions with `gradle test`.
 The release signing key is not in this repository.
 It is in the repository secrets `SIGNING_KEYSTORE_BASE64` and `SIGNING_PASSWORD`, and in a local backup.
 Keep the backup. Without the same key, a new APK cannot install over the old one.
+
+## Credits
+
+Magic Touch runs [EdgeSAM](https://github.com/chongzhou96/EdgeSAM) by Chong Zhou, Xiangtai Li, Chen Change Loy, and Bo Dai, with ONNX Runtime.
+EdgeSAM is under the S-Lab License 1.0, which allows non-commercial use only.
+The app does not include the model. It downloads the model from the authors' Hugging Face page on first use.
 
 ## Plan
 

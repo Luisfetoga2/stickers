@@ -71,7 +71,8 @@ dependencies {
     implementation 'com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1'
     implementation 'com.google.android.gms:play-services-base:18.5.0'
     implementation 'io.github.junkfood02.youtubedl-android:library:0.18.1'
-    implementation 'com.google.mediapipe:tasks-vision:1.0.0'
+    // Runs EdgeSAM for Magic Touch.
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.30.0'
     // yt-dlp's library pulls an old Kotlin split into several jars. The BOM keeps all Kotlin jars on one version.
     implementation platform('org.jetbrains.kotlin:kotlin-bom:2.0.21')
     testImplementation 'junit:junit:4.13.2'

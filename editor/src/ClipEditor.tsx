@@ -21,7 +21,7 @@ import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { followOffsets } from './follow';
-import { strokePoints, trackObject } from './tapTrack';
+import { trackObject } from './tapTrack';
 import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
 import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
 import { kb } from './encode';
@@ -557,13 +557,13 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         points,
         width,
         height,
-        async (i, framePoints) => {
+        async (i, prompt) => {
           frameCtx.drawImage(cutout.source(i), 0, 0);
           const jpeg = await new Promise<Blob>((resolve, reject) =>
             frameCanvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read a frame.'))), 'image/jpeg', 0.9),
           );
-          const stroke = strokePoints(framePoints.map((p) => ({ x: p.x / width, y: p.y / height })));
-          const result = await bridge.segmentObject(jpeg, stroke, (text) => setStatus({ kind: 'info', text }));
+          const normalized = { ...prompt, points: prompt.points.map((p) => ({ x: p.x / width, y: p.y / height })) };
+          const result = await bridge.segmentObject(jpeg, normalized, (text) => setStatus({ kind: 'info', text }));
           modelMs += result.modelMs;
           delegate = result.delegate;
           return fitMask(result.mask, result.width, result.height, width, height);

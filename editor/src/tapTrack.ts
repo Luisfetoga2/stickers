@@ -1,7 +1,7 @@
 /**
  * Follows one object through a clip for Keep and Remove.
- * The user marks the object in one frame. For each next frame, the app marks the point deepest inside the
- * object's last outline, which stays on the object when it moves a little.
+ * The user marks the object in one frame. For each next frame, the model gets a box around the object's last
+ * outline and the point deepest inside it, which stays on the object when it moves a little.
  */
 import type { Point } from './transform';
 
@@ -114,8 +114,81 @@ export function sameObject(previousArea: number, mask: Uint8Array, width: number
   return mask[Math.floor(point.y) * width + Math.floor(point.x)] > 127;
 }
 
-/** Marks pixels in one frame and returns that frame's object mask. Points are in pixels. */
-export type SegmentFrame = (index: number, points: Point[]) => Promise<Uint8Array>;
+/**
+ * What the model gets for one frame, in pixels. Labels: 1 marks the object, 2 and 3 are a box's
+ * top-left and bottom-right corners.
+ * pick: the model answers with 4 guesses, from a small part to the whole object. "largest" takes the largest
+ * confident one, which suits a single tap. "first" takes the model's one answer for several marks or a box.
+ */
+export interface Prompt {
+  points: Point[];
+  labels: number[];
+  pick: 'largest' | 'first';
+}
+
+/** Marks no farther apart than this share of the frame count as one tap. */
+const TAP_SIZE = 0.03;
+/** A stroke goes to the model as at most this many points, spread along it. */
+const STROKE_POINTS = 12;
+/** The box around the object in the last frame grows by this share on each side, so the object can move. */
+const BOX_MARGIN = 0.05;
+
+/** The prompt for the user's own marks: one tap, or points along a stroke. */
+export function marksPrompt(points: Point[], width: number, height: number): Prompt {
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const size = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  if (size <= TAP_SIZE * Math.max(width, height)) {
+    const center = { x: xs.reduce((a, b) => a + b, 0) / xs.length, y: ys.reduce((a, b) => a + b, 0) / ys.length };
+    return { points: [center], labels: [1], pick: 'largest' };
+  }
+  const n = Math.min(STROKE_POINTS, points.length);
+  const spread = Array.from({ length: n }, (_, i) => points[Math.round((i * (points.length - 1)) / Math.max(1, n - 1))]);
+  return { points: spread, labels: spread.map(() => 1), pick: 'first' };
+}
+
+/** The smallest box around the mask's pixels, or null for an empty mask. */
+export function maskBox(mask: Uint8Array, width: number, height: number) {
+  let x0 = width;
+  let y0 = height;
+  let x1 = -1;
+  let y1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (mask[y * width + x] > 127) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  return x1 < 0 ? null : { x0, y0, x1: x1 + 1, y1: y1 + 1 };
+}
+
+/**
+ * The prompt for the next frame: a point deep inside the object in the last frame, and a box a little larger
+ * than it was. The box keeps the whole object, and the point says which object is meant.
+ */
+export function followPrompt(previous: Uint8Array, width: number, height: number): Prompt | null {
+  const point = innerPoint(previous, width, height);
+  const box = maskBox(previous, width, height);
+  if (!point || !box) return null;
+  const mx = (box.x1 - box.x0) * BOX_MARGIN;
+  const my = (box.y1 - box.y0) * BOX_MARGIN;
+  return {
+    points: [
+      point,
+      { x: Math.max(0, box.x0 - mx), y: Math.max(0, box.y0 - my) },
+      { x: Math.min(width, box.x1 + mx), y: Math.min(height, box.y1 + my) },
+    ],
+    labels: [1, 2, 3],
+    pick: 'first',
+  };
+}
+
+/** Finds the object in one frame from a prompt and returns that frame's object mask. */
+export type SegmentFrame = (index: number, prompt: Prompt) => Promise<Uint8Array>;
 
 export interface TrackResult {
   /** One mask per frame, or null where the object was lost. */
@@ -124,7 +197,7 @@ export interface TrackResult {
 }
 
 /**
- * Finds the object in the start frame from the user's points, then follows it forward and backward.
+ * Finds the object in the start frame from the user's marks, then follows it forward and backward.
  * Following stops in a direction when the object leaves the picture or changes too much,
  * so one wrong frame does not spread through the rest of the clip.
  */
@@ -139,7 +212,7 @@ export async function trackObject(
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const masks: Array<Uint8Array | null> = new Array(count).fill(null);
-  const first = await segment(start, points);
+  const first = await segment(start, marksPrompt(points, width, height));
   if (maskArea(first) === 0) throw new Error('Nothing was found there. Tap or scribble on the middle of the object.');
   masks[start] = first;
   let done = 1;
@@ -149,34 +222,14 @@ export async function trackObject(
     let previous = first;
     for (let i = start + step; i >= 0 && i < count; i += step) {
       signal?.throwIfAborted();
-      const point = innerPoint(previous, width, height);
-      if (!point) break;
-      const mask = await segment(i, [point]);
+      const prompt = followPrompt(previous, width, height);
+      if (!prompt) break;
+      const mask = await segment(i, prompt);
       onStep(++done);
-      if (!sameObject(maskArea(previous), mask, width, point)) break;
+      if (!sameObject(maskArea(previous), mask, width, prompt.points[0])) break;
       masks[i] = mask;
       previous = mask;
     }
   }
   return { masks, found: masks.filter((m) => m !== null).length };
 }
-
-/** Strokes need a few points. A single point is too little for the model, so a tap becomes a short stroke. */
-const TAP_SPREAD = 0.01;
-
-/** Points inside the image, in 0 to 1. Points outside it crash the engine. */
-function clampPoint(p: Point): Point {
-  return { x: Math.min(0.999, Math.max(0.001, p.x)), y: Math.min(0.999, Math.max(0.001, p.y)) };
-}
-
-/** Turns one or more normalized points into the stroke the model expects. */
-export function strokePoints(points: Point[]): Point[] {
-  if (points.length >= 3) return points.map(clampPoint);
-  const p = points[0];
-  return [
-    { x: p.x - TAP_SPREAD, y: p.y - TAP_SPREAD },
-    { x: p.x, y: p.y },
-    { x: p.x + TAP_SPREAD, y: p.y + TAP_SPREAD },
-  ].map(clampPoint);
-}
-

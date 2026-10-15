@@ -12,14 +12,12 @@ import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
 
-import com.google.mediapipe.tasks.core.Delegate;
-
 import java.util.function.Consumer;
 
 /**
  * Runs Magic Touch in its own process (":magic" in the manifest).
- * A native crash in MediaPipe ends only this process, and the app tells the user instead of closing.
- * When the app unbinds, the segmenter closes, which frees the model's native memory.
+ * A native crash ends only this process, and the app tells the user instead of closing.
+ * When the app unbinds, the model sessions close, which frees their native memory.
  */
 public class MagicTouchService extends Service {
 
@@ -34,7 +32,7 @@ public class MagicTouchService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        magicTouch = new MagicTouch(this, new ModelStore(this));
+        magicTouch = new MagicTouch(new ModelStore(this));
     }
 
     @Override
@@ -58,38 +56,33 @@ public class MagicTouchService extends Service {
         String id = in.getString("id");
         byte[] jpeg = in.getByteArray("jpeg");
         float[] points = in.getFloatArray("points");
+        float[] labels = in.getFloatArray("labels");
         Bitmap frame = jpeg == null ? null : BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
-        if (frame == null || points == null) {
+        if (frame == null || points == null || labels == null || points.length != labels.length * 2) {
             send(reply, MSG_ERROR, id, b -> b.putString("message", "Could not read the frame."));
             return true;
         }
-        Delegate delegate = "CPU".equals(in.getString("use")) ? Delegate.CPU : Delegate.GPU;
-        magicTouch.segment(frame, points, delegate,
-                new MagicTouch.Callback() {
-                    @Override
-                    public void onProgress(String message) {
-                        send(reply, MSG_PROGRESS, id, b -> b.putString("message", message));
-                    }
+        magicTouch.segment(frame, points, labels, in.getBoolean("largest"), new MagicTouch.Callback() {
+            @Override
+            public void onProgress(String message) {
+                send(reply, MSG_PROGRESS, id, b -> b.putString("message", message));
+            }
 
-                    @Override
-                    public void onMask(byte[] mask, int width, int height, long modelMs, String delegate) {
-                        send(reply, MSG_MASK, id, b -> {
-                            b.putByteArray("mask", mask);
-                            b.putInt("width", width);
-                            b.putInt("height", height);
-                            b.putLong("ms", modelMs);
-                            b.putString("delegate", delegate);
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message, boolean engineFailed) {
-                        send(reply, MSG_ERROR, id, b -> {
-                            b.putString("message", message);
-                            b.putBoolean("engineFailed", engineFailed);
-                        });
-                    }
+            @Override
+            public void onMask(byte[] mask, int width, int height, long modelMs) {
+                send(reply, MSG_MASK, id, b -> {
+                    b.putByteArray("mask", mask);
+                    b.putInt("width", width);
+                    b.putInt("height", height);
+                    b.putLong("ms", modelMs);
                 });
+            }
+
+            @Override
+            public void onError(String message) {
+                send(reply, MSG_ERROR, id, b -> b.putString("message", message));
+            }
+        });
         return true;
     }
 

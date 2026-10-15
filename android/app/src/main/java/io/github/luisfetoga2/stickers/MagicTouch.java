@@ -3,206 +3,142 @@ package io.github.luisfetoga2.stickers;
 import android.graphics.Bitmap;
 import android.os.SystemClock;
 
-import com.google.mediapipe.framework.image.BitmapImageBuilder;
-import com.google.mediapipe.framework.image.ByteBufferExtractor;
-import com.google.mediapipe.framework.image.MPImage;
-import com.google.mediapipe.tasks.components.containers.NormalizedKeypoint;
-import com.google.mediapipe.tasks.core.BaseOptions;
-import com.google.mediapipe.tasks.core.Delegate;
-import com.google.mediapipe.tasks.vision.interactivesegmenter.InteractiveSegmenter;
-import com.google.mediapipe.tasks.vision.interactivesegmenter.InteractiveSegmenterOptions;
-import com.google.mediapipe.tasks.vision.interactivesegmenter.Stroke;
-
-import java.io.File;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.file.Files;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.nio.FloatBuffer;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import ai.onnxruntime.OnnxTensor;
+import ai.onnxruntime.OrtEnvironment;
+import ai.onnxruntime.OrtException;
+import ai.onnxruntime.OrtSession;
+
 /**
- * Magic Touch (MediaPipe interactive segmentation): marks on an object give that object's mask.
- * It runs natively, on a worker thread, inside MagicTouchService's own process, so a native crash
- * cannot close the app.
- * The app picks the delegate before each request, so a crash always belongs to the delegate it asked for.
+ * Magic Touch: marks or a box on an object give that object's mask. It runs EdgeSAM (a small Segment
+ * Anything model) with ONNX Runtime on a worker thread, inside MagicTouchService's own process, so a native
+ * crash cannot close the app.
  */
 final class MagicTouch {
 
     interface Callback {
         void onProgress(String message);
 
-        /** 0 or 255 per pixel, the same size as the frame. delegate says where it ran, such as "GPU". */
-        void onMask(byte[] mask, int width, int height, long modelMs, String delegate);
+        /** 0 or 255 per pixel, the same size as the frame. */
+        void onMask(byte[] mask, int width, int height, long modelMs);
 
-        /** engineFailed is true when the delegate itself refused to start, so the other one is worth a try. */
-        void onError(String message, boolean engineFailed);
-    }
-
-
-    private static final class Result {
-        byte[] mask;
-        int width;
-        int height;
-        long ms;
+        void onError(String message);
     }
 
     private final ModelStore models;
-    private final android.content.Context context;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
-    private InteractiveSegmenter segmenter;
-    /** The delegate of the open segmenter. */
-    private Delegate current;
-    /** How MediaPipe gets the model: 0 by file path, 1 by the file's bytes. Remembered once one works. */
-    private int modelSource = -1;
+    private OrtEnvironment env;
+    private OrtSession encoder;
+    private OrtSession decoder;
 
-    MagicTouch(android.content.Context context, ModelStore models) {
-        this.context = context.getApplicationContext();
+    MagicTouch(ModelStore models) {
         this.models = models;
     }
 
-    /** points holds normalized x, y pairs. A tap needs at least 3 points, which the editor sends. */
-    void segment(Bitmap frame, float[] points, Delegate delegate, Callback callback) {
+    /**
+     * points holds normalized x, y pairs, and labels one label per point: 1 marks the object,
+     * 2 and 3 are a box's corners. largest picks the largest sure guess, for a single tap.
+     */
+    void segment(Bitmap frame, float[] points, float[] labels, boolean largest, Callback callback) {
         worker.execute(() -> {
-            File file;
             try {
-                file = models.ensureBlocking(callback::onProgress);
-            } catch (Throwable e) {
-                callback.onError(e.getMessage(), false);
-                return;
-            }
-            if (segmenter == null || current != delegate) {
-                callback.onProgress("Starting Magic Touch on the " + delegate.name() + "…");
-                try {
-                    closeSegmenter();
-                    segmenter = create(file, delegate);
-                    current = delegate;
-                } catch (Throwable e) {
-                    callback.onError("Magic Touch could not start on the " + delegate.name() + ": " + e.getMessage(),
-                            true);
-                    return;
+                if (encoder == null) {
+                    ModelStore.Files files = models.ensureBlocking(callback::onProgress);
+                    callback.onProgress("Starting Magic Touch…");
+                    open(files);
                 }
-            }
-            try {
-                Result result = runWith(file, delegate, frame, points);
-                callback.onMask(result.mask, result.width, result.height, result.ms, delegate.name());
+                long started = SystemClock.elapsedRealtime();
+                byte[] mask = run(frame, points, labels, largest);
+                callback.onMask(mask, frame.getWidth(), frame.getHeight(), SystemClock.elapsedRealtime() - started);
             } catch (Throwable e) {
-                callback.onError("Magic Touch failed: " + e.getMessage(), false);
+                callback.onError("Magic Touch failed: " + e.getMessage());
             }
         });
     }
 
     void close() {
-        worker.execute(this::closeSegmenter);
+        worker.execute(this::closeSessions);
         worker.shutdown();
     }
 
-    /** Runs one frame on one delegate, opening or switching the segmenter as needed. */
-    private Result runWith(File file, Delegate delegate, Bitmap frame, float[] points) throws IOException {
-        if (segmenter == null || current != delegate) {
-            closeSegmenter();
-            segmenter = create(file, delegate);
-            current = delegate;
-        }
-        try {
-            return run(frame, points);
-        } catch (RuntimeException e) {
-            if (String.valueOf(e.getMessage()).contains("ExternalFile") && modelSource == 0) {
-                // The file path loaded, but the model's parts did not get it. Pass the bytes instead.
-                modelSource = 1;
-                closeSegmenter();
-                segmenter = create(file, delegate);
-                current = delegate;
-                return run(frame, points);
-            }
-            closeSegmenter();
+    private void open(ModelStore.Files files) throws OrtException {
+        env = OrtEnvironment.getEnvironment();
+        try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+            encoder = env.createSession(files.encoder.getAbsolutePath(), options);
+            decoder = env.createSession(files.decoder.getAbsolutePath(), options);
+        } catch (OrtException e) {
+            closeSessions();
             throw e;
         }
     }
 
-    private Result run(Bitmap frame, float[] points) {
-        long started = SystemClock.elapsedRealtime();
-        MPImage image = new BitmapImageBuilder(frame).build();
-        segmenter.setImage(image);
-        List<NormalizedKeypoint> keypoints = new ArrayList<>();
-        for (int i = 0; i + 1 < points.length; i += 2) {
-            keypoints.add(NormalizedKeypoint.create(clamp(points[i]), clamp(points[i + 1])));
+    private byte[] run(Bitmap frame, float[] points, float[] labels, boolean largest) throws OrtException {
+        int width = frame.getWidth();
+        int height = frame.getHeight();
+        float scale = Sam.scale(width, height);
+        int rw = Math.round(width * scale);
+        int rh = Math.round(height * scale);
+        Bitmap resized = Bitmap.createScaledBitmap(frame, rw, rh, true);
+        int[] argb = new int[rw * rh];
+        resized.getPixels(argb, 0, rw, 0, 0, rw, rh);
+        if (resized != frame) {
+            resized.recycle();
         }
-        Stroke stroke = Stroke.builder()
-                .setBrushMode(Stroke.BrushMode.POSITIVE)
-                .setPoints(keypoints)
-                .setCompleted(true)
-                .build();
-        MPImage output = segmenter.segment(Collections.singletonList(stroke));
-        Result result = new Result();
-        result.mask = toMask(output);
-        result.width = output.getWidth();
-        result.height = output.getHeight();
-        output.close();
-        image.close();
-        result.ms = SystemClock.elapsedRealtime() - started;
-        return result;
-    }
 
-    /**
-     * Tries the ways to hand MediaPipe the model, simplest first. A direct buffer becomes a raw memory pointer,
-     * which this model bundle drops, so it is not used.
-     */
-    private InteractiveSegmenter create(File file, Delegate delegate) throws IOException {
-        RuntimeException last = null;
-        for (int source = Math.max(0, modelSource); source <= 1; source++) {
-            BaseOptions.Builder base = BaseOptions.builder().setDelegate(delegate);
-            if (source == 0) {
-                base.setModelAssetPath(file.getAbsolutePath());
-            } else {
-                // A heap buffer, not a direct one, so MediaPipe copies the bytes, as the web version does.
-                base.setModelAssetBuffer(ByteBuffer.wrap(Files.readAllBytes(file.toPath())));
-            }
-            try {
-                InteractiveSegmenter created = InteractiveSegmenter.createFromOptions(context,
-                        InteractiveSegmenterOptions.builder().setBaseOptions(base.build()).build());
-                modelSource = source;
-                return created;
-            } catch (RuntimeException e) {
-                last = e;
-            }
+        FloatBuffer embeddings;
+        try (OnnxTensor image = OnnxTensor.createTensor(env, FloatBuffer.wrap(Sam.input(argb, rw, rh)),
+                new long[] {1, 3, Sam.SIDE, Sam.SIDE});
+             OrtSession.Result encoded = encoder.run(java.util.Collections.singletonMap("image", image))) {
+            embeddings = ((OnnxTensor) encoded.get(0)).getFloatBuffer();
         }
-        throw last;
-    }
 
-    private void closeSegmenter() {
-        if (segmenter != null) {
-            segmenter.close();
-            segmenter = null;
-            current = null;
+        int n = labels.length;
+        float[] coords = new float[n * 2];
+        for (int i = 0; i < n; i++) {
+            coords[2 * i] = points[2 * i] * width * scale;
+            coords[2 * i + 1] = points[2 * i + 1] * height * scale;
+        }
+        Map<String, OnnxTensor> inputs = new HashMap<>();
+        try {
+            inputs.put("image_embeddings", OnnxTensor.createTensor(env, embeddings, new long[] {1, 256, 64, 64}));
+            inputs.put("point_coords", OnnxTensor.createTensor(env, FloatBuffer.wrap(coords), new long[] {1, n, 2}));
+            inputs.put("point_labels", OnnxTensor.createTensor(env, FloatBuffer.wrap(labels), new long[] {1, n}));
+            try (OrtSession.Result decoded = decoder.run(inputs)) {
+                FloatBuffer scores = ((OnnxTensor) decoded.get("scores").get()).getFloatBuffer();
+                FloatBuffer masks = ((OnnxTensor) decoded.get("masks").get()).getFloatBuffer();
+                if (masks.capacity() != 4 * Sam.LOW * Sam.LOW) {
+                    throw new IllegalStateException("unexpected mask size " + masks.capacity());
+                }
+                float[] scoreArray = new float[scores.capacity()];
+                scores.get(scoreArray);
+                return Sam.mask(masks, Sam.pick(scoreArray, masks, largest), width, height);
+            }
+        } finally {
+            for (OnnxTensor tensor : inputs.values()) {
+                tensor.close();
+            }
         }
     }
 
-    /** The model answers with a confidence per pixel, or a byte per pixel. Either becomes 0 or 255. */
-    private static byte[] toMask(MPImage result) {
-        int count = result.getWidth() * result.getHeight();
-        int format = result.getContainedImageProperties().get(0).getImageFormat();
-        ByteBuffer buffer = ByteBufferExtractor.extract(result, format);
-        buffer.rewind();
-        byte[] mask = new byte[count];
-        if (format == MPImage.IMAGE_FORMAT_VEC32F1) {
-            buffer.order(ByteOrder.nativeOrder());
-            for (int i = 0; i < count; i++) {
-                mask[i] = buffer.getFloat() >= 0.5f ? (byte) 255 : 0;
+    private void closeSessions() {
+        try {
+            if (encoder != null) {
+                encoder.close();
             }
-        } else {
-            for (int i = 0; i < count; i++) {
-                mask[i] = (buffer.get() & 0xFF) > 0 ? (byte) 255 : 0;
+            if (decoder != null) {
+                decoder.close();
             }
+        } catch (OrtException ignored) {
+            // The process is ending anyway.
         }
-        return mask;
-    }
-
-    private static float clamp(float v) {
-        return Math.max(0.001f, Math.min(0.999f, v));
+        encoder = null;
+        decoder = null;
     }
 }

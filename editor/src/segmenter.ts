@@ -1,50 +1,35 @@
 /**
- * Magic Touch in a desktop browser, for testing only. On the phone, the app runs Magic Touch natively on the GPU.
+ * Magic Touch in a desktop browser, for testing only. On the phone, the app runs the same EdgeSAM model natively.
  * Run `npm run dev-model` once to get the model into dev-models/.
  */
-import type { BrushMode, InteractiveSegmenter } from '@mediapipe/tasks-vision';
-import { strokePoints } from './tapTrack';
-import type { Point } from './transform';
+import type { InferenceSession } from 'onnxruntime-web';
+import { LOW, SIDE, samInput, samMask, samPick, samScale } from './samMath';
+import type { Prompt } from './tapTrack';
 
 export interface ObjectMask {
-  /** 0 to 255 per pixel, 255 inside the object. */
+  /** 0 or 255 per pixel, 255 inside the object. */
   data: Uint8Array;
   width: number;
   height: number;
 }
 
-/**
- * BrushMode.POSITIVE: the stroke marks what to select. The library declares BrushMode only as a type,
- * so the value is written out here.
- */
-const POSITIVE = 1 as BrushMode;
+interface Sam {
+  ort: typeof import('onnxruntime-web');
+  encoder: InferenceSession;
+  decoder: InferenceSession;
+}
 
-let instance: Promise<InteractiveSegmenter> | null = null;
+let instance: Promise<Sam> | null = null;
 
-const DEV_MODEL = '/dev-models/interactive_segmentation.task';
-
-/** Loads the engine and the model once. The GPU runs it when it can, and the CPU otherwise. */
-export function getSegmenter(modelUrl = DEV_MODEL): Promise<InteractiveSegmenter> {
+/** Loads the engine and both model parts once. */
+export function getSegmenter(): Promise<Sam> {
   instance ??= (async () => {
-    const { InteractiveSegmenter } = await import('@mediapipe/tasks-vision');
+    const ort = await import('onnxruntime-web');
     // The dev server serves the engine straight from node_modules. It never goes into the app.
-    const base = new URL('/node_modules/@mediapipe/tasks-vision/wasm/', document.baseURI).href;
-    const fileset = {
-      wasmLoaderPath: `${base}vision_wasm_internal.js`,
-      wasmBinaryPath: `${base}vision_wasm_internal.wasm`,
-    };
-    const res = await fetch(modelUrl);
-    if (!res.ok) throw new Error(`Could not read the Magic Touch model (${res.status}).`);
-    const model = new Uint8Array(await res.arrayBuffer());
-    try {
-      return await InteractiveSegmenter.createFromOptions(fileset, {
-        baseOptions: { modelAssetBuffer: model, delegate: 'GPU' },
-      });
-    } catch {
-      return await InteractiveSegmenter.createFromOptions(fileset, {
-        baseOptions: { modelAssetBuffer: model, delegate: 'CPU' },
-      });
-    }
+    ort.env.wasm.wasmPaths = new URL('/node_modules/onnxruntime-web/dist/', document.baseURI).href;
+    const encoder = await ort.InferenceSession.create('/dev-models/edge_sam_3x_encoder.onnx');
+    const decoder = await ort.InferenceSession.create('/dev-models/edge_sam_3x_decoder.onnx');
+    return { ort, encoder, decoder };
   })().catch((err) => {
     instance = null;
     throw err;
@@ -52,24 +37,28 @@ export function getSegmenter(modelUrl = DEV_MODEL): Promise<InteractiveSegmenter
   return instance;
 }
 
-/** The mask of the object under the points (normalized, 0 to 1), the same size as the image. */
-export function objectAt(segmenter: InteractiveSegmenter, image: TexImageSource, points: Point[]): ObjectMask {
-  segmenter.setImage(image);
-  const mask = segmenter.segment([{ brushMode: POSITIVE, point: strokePoints(points), isCompleted: true }]);
-  try {
-    const { width, height } = mask;
-    let data: Uint8Array;
-    if (mask.hasFloat32Array()) {
-      const conf = mask.getAsFloat32Array();
-      data = new Uint8Array(conf.length);
-      for (let i = 0; i < conf.length; i++) data[i] = conf[i] >= 0.5 ? 255 : 0;
-    } else {
-      const raw = mask.getAsUint8Array();
-      data = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) data[i] = raw[i] > 0 ? 255 : 0;
-    }
-    return { data, width, height };
-  } finally {
-    mask.close();
-  }
+/** The mask of the object the prompt points at. Prompt points are normalized, 0 to 1. */
+export async function objectAt(sam: Sam, image: ImageBitmap, prompt: Prompt): Promise<ObjectMask> {
+  const { width, height } = image;
+  const scale = samScale(width, height);
+  const rw = Math.round(width * scale);
+  const rh = Math.round(height * scale);
+  const canvas = new OffscreenCanvas(rw, rh);
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(image, 0, 0, rw, rh);
+  const input = samInput(ctx.getImageData(0, 0, rw, rh).data, rw, rh);
+
+  const { ort, encoder, decoder } = sam;
+  const encoded = await encoder.run({ image: new ort.Tensor('float32', input, [1, 3, SIDE, SIDE]) });
+  const coords = new Float32Array(prompt.points.flatMap((p) => [p.x * width * scale, p.y * height * scale]));
+  const decoded = await decoder.run({
+    image_embeddings: encoded.image_embeddings,
+    point_coords: new ort.Tensor('float32', coords, [1, prompt.points.length, 2]),
+    point_labels: new ort.Tensor('float32', Float32Array.from(prompt.labels), [1, prompt.labels.length]),
+  });
+  const scores = decoded.scores.data as Float32Array;
+  const masks = decoded.masks.data as Float32Array;
+  if (masks.length !== 4 * LOW * LOW) throw new Error(`Unexpected mask size ${masks.length}.`);
+  const index = samPick(scores, masks, prompt.pick);
+  return { data: samMask(masks, index, width, height), width, height };
 }

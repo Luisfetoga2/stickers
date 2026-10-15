@@ -743,25 +743,34 @@ public class MainActivity extends Activity {
         }
 
         /**
-         * Finds the object under the marks in one frame with Magic Touch, and reports its mask through
-         * onObjectResult. points is a JSON array of normalized x, y pairs.
+         * Finds the object a prompt points at in one frame with Magic Touch, and reports its mask through
+         * onObjectResult. prompt is JSON: points (normalized x, y pairs), labels (one per point), and pick.
          */
         @JavascriptInterface
-        public void segmentObject(String id, String jpegBase64, String points) {
+        public void segmentObject(String id, String jpegBase64, String prompt) {
             byte[] jpeg;
             float[] xy;
+            float[] labels;
+            boolean largest;
             try {
                 jpeg = Base64.getDecoder().decode(jpegBase64);
-                JSONArray array = new JSONArray(points);
-                xy = new float[array.length()];
+                JSONObject json = new JSONObject(prompt);
+                JSONArray points = json.getJSONArray("points");
+                JSONArray labelArray = json.getJSONArray("labels");
+                xy = new float[points.length()];
                 for (int i = 0; i < xy.length; i++) {
-                    xy[i] = (float) array.getDouble(i);
+                    xy[i] = (float) points.getDouble(i);
                 }
+                labels = new float[labelArray.length()];
+                for (int i = 0; i < labels.length; i++) {
+                    labels[i] = (float) labelArray.getDouble(i);
+                }
+                largest = "largest".equals(json.optString("pick"));
             } catch (IllegalArgumentException | JSONException e) {
                 sendObjectResult(id, false, null, 0, 0, 0, "", "Could not read the frame.");
                 return;
             }
-            main.post(() -> magicTouch.segment(id, jpeg, xy, new MagicTouchClient.Callback() {
+            main.post(() -> magicTouch.segment(id, jpeg, xy, labels, largest, new MagicTouchClient.Callback() {
                 @Override
                 public void onProgress(String message) {
                     try {
@@ -772,8 +781,8 @@ public class MainActivity extends Activity {
                 }
 
                 @Override
-                public void onMask(byte[] mask, int width, int height, long modelMs, String delegate) {
-                    sendObjectResult(id, true, mask, width, height, modelMs, delegate, null);
+                public void onMask(byte[] mask, int width, int height, long modelMs) {
+                    sendObjectResult(id, true, mask, width, height, modelMs, "CPU", null);
                 }
 
                 @Override

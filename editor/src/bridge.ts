@@ -1,6 +1,6 @@
 import { DEFAULT_CHROMA, chromaKey, detectKeyColor } from './chroma';
 import { blobToBase64 } from './encode';
-import type { Point } from './transform';
+import type { Prompt } from './tapTrack';
 
 export interface SharedFile {
   url: string;
@@ -96,7 +96,7 @@ export interface ObjectResult {
   height: number;
   /** Time Magic Touch itself took. */
   modelMs: number;
-  /** "GPU" or "CPU" in the app, "browser" in a desktop browser. */
+  /** Where it ran: "CPU" in the app, "browser" in a desktop browser. */
   delegate: string;
 }
 
@@ -112,7 +112,7 @@ interface NativeBridge {
   appVersion(): string;
   openUpdate(): void;
   checkForUpdate(): void;
-  segmentObject(id: string, jpegBase64: string, points: string): void;
+  segmentObject(id: string, jpegBase64: string, prompt: string): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -150,10 +150,10 @@ export interface Bridge {
   /** Asks GitHub now. The answer arrives through onUpdateCheck. Returns false when it cannot ask here. */
   checkForUpdate(): boolean;
   /**
-   * Finds the object under a stroke in one frame with Magic Touch. points are normalized, at least 3.
-   * The first call downloads the model (about 30 MB), so onProgress reports that.
+   * Finds the object the prompt points at in one frame with Magic Touch. Prompt points are normalized.
+   * The first call downloads the model (about 38 MB), so onProgress reports that.
    */
-  segmentObject(jpeg: Blob, points: Point[], onProgress: (message: string) => void): Promise<ObjectResult>;
+  segmentObject(jpeg: Blob, prompt: Prompt, onProgress: (message: string) => void): Promise<ObjectResult>;
 }
 
 function toLibrary(native: NativeLibrary): StickerLibrary {
@@ -265,12 +265,17 @@ function nativeBridge(native: NativeBridge): Bridge {
       native.checkForUpdate();
       return true;
     },
-    async segmentObject(jpeg, points, onProgress) {
+    async segmentObject(jpeg, prompt, onProgress) {
       const id = String(nextId++);
       const base64 = await blobToBase64(jpeg);
+      const json = JSON.stringify({
+        points: prompt.points.flatMap((p) => [p.x, p.y]),
+        labels: prompt.labels,
+        pick: prompt.pick,
+      });
       return new Promise((resolve, reject) => {
         objects.set(id, { resolve, reject, onProgress });
-        native.segmentObject(id, base64, JSON.stringify(points.flatMap((p) => [p.x, p.y])));
+        native.segmentObject(id, base64, json);
       });
     },
     async removeBackground(jpeg, onProgress) {
@@ -340,14 +345,14 @@ function browserBridge(): Bridge {
     checkForUpdate() {
       return false;
     },
-    async segmentObject(jpeg, points) {
+    async segmentObject(jpeg, prompt) {
       // The web engine is for testing on a computer only. The app build drops this branch.
       if (!import.meta.env.DEV) throw new Error('Magic Touch works only in the Android app.');
       const { getSegmenter, objectAt } = await import('./segmenter');
       const segmenter = await getSegmenter();
       const image = await createImageBitmap(jpeg);
       const started = performance.now();
-      const { data, width, height } = objectAt(segmenter, image, points);
+      const { data, width, height } = await objectAt(segmenter, image, prompt);
       image.close();
       return { mask: data, width, height, modelMs: performance.now() - started, delegate: 'browser' };
     },
