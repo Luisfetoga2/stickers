@@ -1,5 +1,6 @@
 import { DEFAULT_CHROMA, chromaKey, detectKeyColor } from './chroma';
 import { blobToBase64 } from './encode';
+import { unpackBits } from './samMath';
 import type { Prompt } from './tapTrack';
 
 export interface SharedFile {
@@ -80,8 +81,10 @@ interface ShellEvents extends AppEvents {
 interface ObjectResultMessage {
   id: string;
   ok: boolean;
-  /** Base64 bytes, 0 or 255 per pixel. */
-  mask?: string;
+  /** Base64 of count masks packed as bits. */
+  bits?: string;
+  count?: number;
+  chosen?: number;
   width?: number;
   height?: number;
   ms?: number;
@@ -90,8 +93,13 @@ interface ObjectResultMessage {
 }
 
 export interface ObjectResult {
-  /** 0 or 255 per pixel, the same size as the frame. */
-  mask: Uint8Array;
+  /**
+   * 0 or 255 per pixel, the same size as the frame. With prompt.all, the model's 4 guesses.
+   * Otherwise one mask, the guess the prompt's pick rule takes.
+   */
+  masks: Uint8Array[];
+  /** The guess the pick rule takes, as an index into masks. */
+  chosen: number;
   width: number;
   height: number;
   /** Time Magic Touch itself took. */
@@ -210,16 +218,19 @@ function nativeBridge(native: NativeBridge): Bridge {
           const o = objects.get(result.id);
           if (!o) return;
           objects.delete(result.id);
-          if (!result.ok || !result.mask) {
+          if (!result.ok || !result.bits) {
             o.reject(new Error(result.message ?? 'Magic Touch failed.'));
             return;
           }
-          const bytes = atob(result.mask);
-          const mask = new Uint8Array(bytes.length);
-          for (let i = 0; i < bytes.length; i++) mask[i] = bytes.charCodeAt(i);
+          const bytes = atob(result.bits);
+          const bits = new Uint8Array(bytes.length);
+          for (let i = 0; i < bytes.length; i++) bits[i] = bytes.charCodeAt(i);
+          const width = result.width ?? 0;
+          const height = result.height ?? 0;
           o.resolve({
-            mask,
-            width: result.width ?? 0,
+            masks: unpackBits(bits, result.count ?? 1, width * height),
+            chosen: result.chosen ?? 0,
+            width,
             height: result.height ?? 0,
             modelMs: result.ms ?? 0,
             delegate: result.delegate ?? '',
@@ -272,6 +283,7 @@ function nativeBridge(native: NativeBridge): Bridge {
         points: prompt.points.flatMap((p) => [p.x, p.y]),
         labels: prompt.labels,
         pick: prompt.pick,
+        all: !!prompt.all,
       });
       return new Promise((resolve, reject) => {
         objects.set(id, { resolve, reject, onProgress });
@@ -352,9 +364,9 @@ function browserBridge(): Bridge {
       const segmenter = await getSegmenter();
       const image = await createImageBitmap(jpeg);
       const started = performance.now();
-      const { data, width, height } = await objectAt(segmenter, image, prompt);
+      const { masks, chosen, width, height } = await objectAt(segmenter, image, prompt);
       image.close();
-      return { mask: data, width, height, modelMs: performance.now() - started, delegate: 'browser' };
+      return { masks, chosen, width, height, modelMs: performance.now() - started, delegate: 'browser' };
     },
     async removeBackground(jpeg, onProgress) {
       // A fake cutout for testing: removes the frame's border color, like a green screen. The real one runs in the app.

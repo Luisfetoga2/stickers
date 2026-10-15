@@ -4,6 +4,12 @@ plugins {
 
 def providerAuthority = 'io.github.luisfetoga2.stickers.provider'
 def buildNumber = (project.findProperty('versionCode') ?: '1') as int
+def versionLine = project.property('versionLine') as String
+def versionLineStart = project.property('versionLineStart') as int
+// The same rule as UpdateChecker.versionName.
+def versionNameFor = { int build ->
+    build < versionLineStart ? "0.1.${build}" : build == versionLineStart ? versionLine : "${versionLine}.${build - versionLineStart}"
+}
 def keystorePath = System.getenv('SIGNING_KEYSTORE_PATH')
 
 android {
@@ -15,9 +21,11 @@ android {
         minSdk 30
         targetSdk 35
         versionCode buildNumber
-        versionName "0.1.${buildNumber}"
+        versionName versionNameFor(buildNumber)
         manifestPlaceholders = [contentProviderAuthority: providerAuthority]
         buildConfigField 'String', 'CONTENT_PROVIDER_AUTHORITY', "\"${providerAuthority}\""
+        buildConfigField 'String', 'VERSION_LINE', "\"${versionLine}\""
+        buildConfigField 'int', 'VERSION_LINE_START', "${versionLineStart}"
         // yt-dlp ships Python for each phone CPU type. Every current Android phone is 64-bit ARM.
         ndk {
             abiFilters 'arm64-v8a'
@@ -76,4 +84,14 @@ dependencies {
     // yt-dlp's library pulls an old Kotlin split into several jars. The BOM keeps all Kotlin jars on one version.
     implementation platform('org.jetbrains.kotlin:kotlin-bom:2.0.21')
     testImplementation 'junit:junit:4.13.2'
+}
+
+// Writes the version name for the release title in GitHub Actions.
+tasks.register('writeVersionName') {
+    def name = versionNameFor(buildNumber)
+    def out = layout.buildDirectory.file('version-name.txt')
+    outputs.file(out)
+    doLast {
+        out.get().asFile.text = name
+    }
 }

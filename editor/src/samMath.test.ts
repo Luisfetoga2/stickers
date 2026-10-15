@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LOW, SIDE, samInput, samMask, samPick, samScale } from './samMath';
+import { LOW, SIDE, samInput, samMask, samPick, samScale, unpackBits } from './samMath';
 
 /** 4 low-resolution guesses: each is positive inside a square of the given size at the top left. */
 function guesses(sizes: number[]): Float32Array {
@@ -51,5 +51,14 @@ describe('samMask', () => {
     expect(mask[120 * 512 + 120]).toBe(255);
     expect(mask[136 * 512 + 136]).toBe(0);
     expect(mask[10 * 512 + 300]).toBe(0);
+  });
+});
+
+describe('unpackBits', () => {
+  it('reads masks packed 8 pixels to a byte', () => {
+    // The same bytes as SamTest.packPutsEightPixelsInAByte in the app.
+    const [a, b] = unpackBits(Uint8Array.from([1, 2 | 8, 0]), 2, 10);
+    expect([...a]).toEqual([255, 0, 0, 0, 0, 0, 0, 0, 0, 255]);
+    expect([...b]).toEqual([0, 255, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 });

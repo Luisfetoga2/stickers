@@ -31,6 +31,16 @@ The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 
 ### GIFs and videos
 
+The stage and the progress stay at the top of the screen. The controls are in four tabs under the stage.
+
+| Tab | What it has |
+|---|---|
+| Cutout | Green screen, AI cutout, Keep, Remove, Erase, Restore, and Follow the subject |
+| Trim | Start, End, Find loop, and the frame rate |
+| Cut | Zoom, Rotate, X, Y, Fit, Fill, Turn 90°, and Flip |
+| File | Check size and Sharpness |
+
+- X and Y are how far the picture's center is from the sticker's center, in sticker pixels.
 - Set Start and End. A sticker is 10 seconds at most.
 - Tap "Find loop" to move Start and End to two frames that match, so the sticker loops without a jump.
 - Pick a frame rate. The app always keeps the frame rate you pick.
@@ -40,9 +50,10 @@ The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 - For a green screen video, tap "Green screen". If the wrong color is gone, tap "Pick color" and tap the screen in the video.
 - For any other video, tap "AI cutout". Trim and frame rate lock while the cutout is on.
 - After an AI cutout, use Keep and Remove to fix whole objects. Tap or scribble on something in any frame.
-  The app finds that object with Magic Touch and follows it through the other frames.
-  A tap takes the whole object, and a scribble takes what it covers.
-  Keep adds it to the cutout, and Remove cuts it out.
+  The app finds that object with Magic Touch and tints it on the stage.
+  If it took too much or too little, tap Smaller or Bigger. Then tap Apply.
+  The app follows the object through the other frames and keeps the size you picked.
+  Keep adds the object to the cutout, and Remove cuts it out.
   The first use downloads the Magic Touch model, about 38 MB, once.
 - Erase and Restore change every frame at once.
 - After an AI cutout, turn on "Follow the subject" to keep the subject in one place while it moves.

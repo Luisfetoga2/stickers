@@ -46,7 +46,7 @@ The flow on the phone:
 - Move and zoom the frame inside the 512x512 square.
 - Pick the frame rate. Fewer frames give a sharper sticker inside the 500 KB limit.
 - The editor makes each frame with the browser's WebP encoder. A small TypeScript muxer (a tool that joins frames into one file) builds the animated WebP.
-- The app lowers the quality, then the frame rate, until the file fits 500 KB.
+- The app keeps the frame rate you pick. "Check size" shows the file size at each sharpness level, and the app says so when no level fits 500 KB.
 - Phase 3 has no background removal for video. Phase 3b adds it.
 
 ### Background removal for video (Phase 3b)
@@ -118,6 +118,7 @@ Each phase ends with a new APK for you to test on your phone.
 | 4 | Your stickers grid with delete and Update WhatsApp, number boxes next to sliders, Back button support | Delete a sticker, then tap Update WhatsApp. |
 | 5 | Clean up: remove the share test page and the sample packs, and write the README | Final install over the old app. |
 | 6 | Post links: share or paste a TikTok, YouTube, Reddit, X, or Instagram link. yt-dlp downloads the video, updates itself once a day, and updates and retries after a failure | Share a TikTok and a YouTube Short to the app. |
+| 7 | Keep and Remove with Magic Touch, the pinned stage with tabs, and the new icon and colors | Remove an object from a video, and find the new icon on the home screen. |
 
 ### Post links (Phase 6)
 
@@ -127,9 +128,32 @@ Each phase ends with a new APK for you to test on your phone.
 - Picture posts are out of scope. A screenshot covers them.
 - The app does not log in to any site. Posts behind a login fail with advice to save the video in the other app.
 
+### Magic Touch (Keep and Remove in videos)
+
+- Magic Touch runs EdgeSAM, a small Segment Anything model, with ONNX Runtime in its own process. A native crash ends only that process, and the app shows Android's crash reason.
+- MediaPipe's interactive segmenter came first. It missed parts of the object, and its CPU engine crashed on the test phone.
+- The model gives 4 guesses per mark. The stage tints the chosen guess, and Smaller and Bigger switch between guesses before the app follows the object.
+- Each next frame gets a box around the object in the last frame and a point inside it. The app takes the guess most like the last frame, and drops parts far from the object.
+- About 1 s per frame on the test phone.
+
+### Identity
+
+- The app icon is a smiling chat bubble sticker with a peeling corner, on a violet-to-pink gradient. The source art is `art/icon.svg`.
+- The editor uses the icon's violet for its buttons. Green and red stay for success, errors, Keep, and Remove.
+
+## Status
+
+All phases are done, and version 0.2 shipped them. The table below keeps the order they were built in.
+
+| Phase | Done in |
+|---|---|
+| 1 to 5 | 0.1.x |
+| 6, post links | 0.1.x |
+| 7, Magic Touch with EdgeSAM, the tabbed editor, and the new icon | 0.2 |
+
 ## Open risks
 
-- ML Kit subject segmentation is a beta API. If it fails on your phone, the fallback is MediaPipe image segmentation, which runs offline in the app.
+- ML Kit subject segmentation is a beta API. If it fails on your phone, EdgeSAM can take over the cutout, because it already runs in the app.
 - Video background removal can take too long on a phone. Phase 3b measures it before we tune it.
 - Video seeking in a WebView can be slow or a little off. If it is, the shell can extract frames with Android's `MediaMetadataRetriever` instead.
 - We do not know yet what WhatsApp does when the app deletes a sticker from a pack that you already added. Phase 4 tests this.

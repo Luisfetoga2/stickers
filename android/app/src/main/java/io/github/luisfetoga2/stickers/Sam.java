@@ -73,6 +73,24 @@ final class Sam {
         return chosen < 0 ? best : chosen;
     }
 
+    /**
+     * Masks as bits, 1 inside the object: pixel i of all the masks in a row is bit i % 8 of byte i / 8.
+     * 8 times smaller than bytes, so 4 guesses fit in one message between the app's processes.
+     */
+    static byte[] pack(byte[][] masks) {
+        int size = masks[0].length;
+        byte[] out = new byte[(masks.length * size + 7) / 8];
+        for (int m = 0; m < masks.length; m++) {
+            for (int i = 0; i < size; i++) {
+                if (masks[m][i] != 0) {
+                    int bit = m * size + i;
+                    out[bit >> 3] |= (byte) (1 << (bit & 7));
+                }
+            }
+        }
+        return out;
+    }
+
     /** One low-resolution guess, scaled back to the frame: 255 inside the object, 0 outside. */
     static byte[] mask(FloatBuffer masks, int index, int width, int height) {
         byte[] out = new byte[width * height];

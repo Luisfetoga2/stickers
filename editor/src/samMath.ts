@@ -72,3 +72,17 @@ export function samMask(masks: Float32Array, index: number, width: number, heigh
   }
   return out;
 }
+
+/** The reverse of Sam.pack in the app: count masks of size pixels from bits, as 0 or 255 per pixel. */
+export function unpackBits(bits: Uint8Array, count: number, size: number): Uint8Array[] {
+  const masks: Uint8Array[] = [];
+  for (let m = 0; m < count; m++) {
+    const mask = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      const bit = m * size + i;
+      if (bits[bit >> 3] & (1 << (bit & 7))) mask[i] = 255;
+    }
+    masks.push(mask);
+  }
+  return masks;
+}

@@ -24,8 +24,11 @@ final class MagicTouch {
     interface Callback {
         void onProgress(String message);
 
-        /** 0 or 255 per pixel, the same size as the frame. */
-        void onMask(byte[] mask, int width, int height, long modelMs);
+        /**
+         * count masks the size of the frame, packed as bits (Sam.pack). With all, the 4 guesses in the model's
+         * order, and chosen says which one the pick rule takes. Without all, only the chosen one.
+         */
+        void onMask(byte[] packed, int width, int height, long modelMs, int count, int chosen);
 
         void onError(String message);
     }
@@ -44,8 +47,9 @@ final class MagicTouch {
     /**
      * points holds normalized x, y pairs, and labels one label per point: 1 marks the object,
      * 2 and 3 are a box's corners. largest picks the largest sure guess, for a single tap.
+     * all returns the 4 guesses, so the user can pick a smaller or larger one.
      */
-    void segment(Bitmap frame, float[] points, float[] labels, boolean largest, Callback callback) {
+    void segment(Bitmap frame, float[] points, float[] labels, boolean largest, boolean all, Callback callback) {
         worker.execute(() -> {
             try {
                 if (encoder == null) {
@@ -54,8 +58,10 @@ final class MagicTouch {
                     open(files);
                 }
                 long started = SystemClock.elapsedRealtime();
-                byte[] mask = run(frame, points, labels, largest);
-                callback.onMask(mask, frame.getWidth(), frame.getHeight(), SystemClock.elapsedRealtime() - started);
+                int[] chosen = new int[1];
+                byte[][] masks = run(frame, points, labels, largest, all, chosen);
+                callback.onMask(Sam.pack(masks), frame.getWidth(), frame.getHeight(),
+                        SystemClock.elapsedRealtime() - started, masks.length, chosen[0]);
             } catch (Throwable e) {
                 callback.onError("Magic Touch failed: " + e.getMessage());
             }
@@ -79,7 +85,8 @@ final class MagicTouch {
         }
     }
 
-    private byte[] run(Bitmap frame, float[] points, float[] labels, boolean largest) throws OrtException {
+    private byte[][] run(Bitmap frame, float[] points, float[] labels, boolean largest, boolean all, int[] chosen)
+            throws OrtException {
         int width = frame.getWidth();
         int height = frame.getHeight();
         float scale = Sam.scale(width, height);
@@ -118,7 +125,17 @@ final class MagicTouch {
                 }
                 float[] scoreArray = new float[scores.capacity()];
                 scores.get(scoreArray);
-                return Sam.mask(masks, Sam.pick(scoreArray, masks, largest), width, height);
+                int pick = Sam.pick(scoreArray, masks, largest);
+                if (!all) {
+                    chosen[0] = 0;
+                    return new byte[][] {Sam.mask(masks, pick, width, height)};
+                }
+                chosen[0] = pick;
+                byte[][] out = new byte[4][];
+                for (int i = 0; i < 4; i++) {
+                    out[i] = Sam.mask(masks, i, width, height);
+                }
+                return out;
             }
         } finally {
             for (OnnxTensor tensor : inputs.values()) {

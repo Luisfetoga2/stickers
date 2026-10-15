@@ -50,7 +50,7 @@ jobs:
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.p12
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-        run: gradle test assembleRelease -PversionCode=${{ github.run_number }} --stacktrace
+        run: gradle test assembleRelease writeVersionName -PversionCode=${{ github.run_number }} --stacktrace
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,6 +58,6 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk sticker-bridge.apk
           gh release create "apk-${{ github.run_number }}" sticker-bridge.apk \
             --target "${{ github.sha }}" \
-            --title "Sticker Bridge 0.1.${{ github.run_number }}" \
+            --title "Sticker Bridge $(cat app/build/version-name.txt)" \
             --notes "Download sticker-bridge.apk on your Android phone and open it to install." \
             --latest

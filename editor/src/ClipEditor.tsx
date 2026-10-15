@@ -22,7 +22,7 @@ import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { StatusLine } from './StatusLine';
 import { followOffsets } from './follow';
-import { trackObject } from './tapTrack';
+import { followObject, guessOptions, marksPrompt, type Prompt } from './tapTrack';
 import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
 import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
 import { kb } from './encode';
@@ -75,6 +75,32 @@ const GHOST_ALPHA = 0.3;
 const MARK_COLORS = { keep: 'rgb(46, 204, 113)', remove: 'rgb(231, 76, 60)' } as const;
 
 /** Scales a mask to another size, by nearest pixel. Magic Touch answers at the frame's size, so this rarely runs. */
+/** How the stage asks the user to check the part Magic Touch found. */
+function choiceText(mode: 'keep' | 'remove', options: number): string {
+  const verb = mode === 'keep' ? 'Keep' : 'Remove';
+  return options > 1
+    ? `${verb} this part? Tap Smaller or Bigger to change it, then Apply.`
+    : `${verb} this part? Tap Apply, or mark it again.`;
+}
+
+/** The part a Keep or Remove mark found, tinted in the mark color, for the stage to draw over the frame. */
+function tintMask(mask: Uint8Array, width: number, height: number, color: readonly [number, number, number]) {
+  const canvas = newCanvas(width, height);
+  const ctx = ctx2d(canvas);
+  const pixels = ctx.createImageData(width, height);
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] <= 127) continue;
+    pixels.data[i * 4] = color[0];
+    pixels.data[i * 4 + 1] = color[1];
+    pixels.data[i * 4 + 2] = color[2];
+    pixels.data[i * 4 + 3] = 150;
+  }
+  ctx.putImageData(pixels, 0, 0);
+  return canvas;
+}
+
+const MARK_RGB = { keep: [46, 204, 113], remove: [231, 76, 60] } as const;
+
 function fitMask(data: Uint8Array, w: number, h: number, width: number, height: number): Uint8Array {
   if (w === width && h === height) return data;
   const out = new Uint8Array(width * height);
@@ -141,7 +167,19 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
   const [, setUndoVersion] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const shownIndex = useRef(0);
-  const locked = busy || working !== null;
+  /** The parts Magic Touch found for a Keep or Remove mark, smallest first, until the user applies one. */
+  const [choice, setChoice] = useState<{
+    mode: 'keep' | 'remove';
+    start: number;
+    options: Uint8Array[];
+    index: number;
+  } | null>(null);
+  const highlight = useMemo(
+    () => choice && tintMask(choice.options[choice.index], work.width, work.height, MARK_RGB[choice.mode]),
+    [choice, work],
+  );
+  /** Controls wait while a task runs, and while a Keep or Remove part waits for Apply. */
+  const locked = busy || working !== null || choice !== null;
 
   useEffect(() => () => cutout?.dispose(), [cutout]);
 
@@ -506,8 +544,10 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
   const ignoredTouch = useRef(false);
 
   const onBrushStart = (p: Point) => {
-    ignoredTouch.current = locked;
-    if (locked || matte === 'none') return;
+    // A new Keep or Remove mark may replace a part that waits for Apply. Anything else waits for it.
+    const marking = (tool === 'keep' || tool === 'remove') && choice !== null;
+    ignoredTouch.current = busy || working !== null || (choice !== null && !marking);
+    if (ignoredTouch.current || matte === 'none') return;
     if (tool === 'pick') {
       pickColor(p);
       return;
@@ -558,12 +598,59 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
     else setMark(null);
   };
 
+  /** Runs Magic Touch on one frame of the cutout. Masks come back at work size. */
+  const segmentFrame = async (index: number, prompt: Prompt) => {
+    if (!cutout) throw new Error('No cutout.');
+    const { width, height } = cutout;
+    const frameCanvas = newCanvas(width, height);
+    ctx2d(frameCanvas).drawImage(cutout.source(index), 0, 0);
+    const jpeg = await new Promise<Blob>((resolve, reject) =>
+      frameCanvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read a frame.'))), 'image/jpeg', 0.9),
+    );
+    const normalized = { ...prompt, points: prompt.points.map((p) => ({ x: p.x / width, y: p.y / height })) };
+    const result = await bridge.segmentObject(jpeg, normalized, (text) => setStatus({ kind: 'info', text }));
+    return {
+      masks: result.masks.map((m) => fitMask(m, result.width, result.height, width, height)),
+      chosen: result.chosen,
+      modelMs: result.modelMs,
+      delegate: result.delegate,
+    };
+  };
+
   /**
-   * Keep or Remove: Magic Touch finds the object under the scribble in the frame on screen,
-   * then follows it through the other frames.
+   * Keep or Remove, step 1: Magic Touch finds the object under the marks in the frame on screen.
+   * The stage shows it, and the user can pick a smaller or bigger part before it goes to every frame.
    */
   const markObject = async (points: Point[], mode: 'keep' | 'remove') => {
     if (!cutout) return;
+    setChoice(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setWorking('cutout');
+    try {
+      const { width, height } = cutout;
+      const start = cutout.indexAt(shownTime);
+      const prompt = { ...marksPrompt(points, width, height), all: true };
+      const result = await segmentFrame(start, prompt);
+      controller.signal.throwIfAborted();
+      const { options, index } = guessOptions(result.masks, result.chosen, width, height, prompt.points);
+      if (options.length === 0) throw new Error('Nothing was found there. Tap or scribble on the middle of the object.');
+      setChoice({ mode, start, options, index });
+      setStatus({ kind: 'info', text: choiceText(mode, options.length) });
+    } catch (err) {
+      setStatus(controller.signal.aborted ? { kind: 'info', text: 'Cancelled.' } : { kind: 'error', text: errorText(err) });
+    } finally {
+      abortRef.current = null;
+      setWorking(null);
+      setMark(null);
+    }
+  };
+
+  /** Keep or Remove, step 2: follows the picked part through the other frames and applies it. */
+  const applyChoice = async () => {
+    if (!cutout || !choice) return;
+    const { mode, start, options, index } = choice;
+    setChoice(null);
     const controller = new AbortController();
     abortRef.current = controller;
     setWorking('cutout');
@@ -573,24 +660,17 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
       const began = performance.now();
       let modelMs = 0;
       let delegate = '';
-      const frameCanvas = newCanvas(width, height);
-      const frameCtx = ctx2d(frameCanvas);
-      const result = await trackObject(
+      const result = await followObject(
         count,
-        cutout.indexAt(shownTime),
-        points,
+        start,
+        options[index],
         width,
         height,
         async (i, prompt) => {
-          frameCtx.drawImage(cutout.source(i), 0, 0);
-          const jpeg = await new Promise<Blob>((resolve, reject) =>
-            frameCanvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read a frame.'))), 'image/jpeg', 0.9),
-          );
-          const normalized = { ...prompt, points: prompt.points.map((p) => ({ x: p.x / width, y: p.y / height })) };
-          const result = await bridge.segmentObject(jpeg, normalized, (text) => setStatus({ kind: 'info', text }));
-          modelMs += result.modelMs;
-          delegate = result.delegate;
-          return fitMask(result.mask, result.width, result.height, width, height);
+          const r = await segmentFrame(i, prompt);
+          modelMs += r.modelMs;
+          delegate = r.delegate;
+          return r.masks;
         },
         (done) => {
           const perFrame = (performance.now() - began) / 1000 / done;
@@ -598,8 +678,8 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
             kind: 'info',
             text:
               `${verb}: frame ${done} of ${count}, ${perFrame.toFixed(2)} s per frame` +
-              ` (Magic Touch ${(modelMs / 1000 / done).toFixed(2)} s on ${delegate}),` +
-              ` about ${Math.ceil((count - done) * perFrame)} s left.`,
+              (delegate ? ` (Magic Touch ${(modelMs / 1000 / Math.max(1, done - 1)).toFixed(2)} s on ${delegate})` : '') +
+              `, about ${Math.ceil((count - done) * perFrame)} s left.`,
           });
         },
         controller.signal,
@@ -624,8 +704,18 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
     } finally {
       abortRef.current = null;
       setWorking(null);
-      setMark(null);
     }
+  };
+
+  const changeChoice = (step: number) => {
+    if (!choice) return;
+    const index = Math.min(choice.options.length - 1, Math.max(0, choice.index + step));
+    setChoice({ ...choice, index });
+  };
+
+  const dropChoice = () => {
+    setChoice(null);
+    setStatus(null);
   };
 
   const undo = () => {
@@ -839,19 +929,45 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
             onBrushMove={onBrushMove}
             onBrushEnd={onBrushEnd}
             mark={mark && { points: mark.points, color: MARK_COLORS[mark.mode] }}
+            highlight={highlight}
           />
           {working && <StatusLine status={status} working onCancel={cancel} />}
         </div>
 
-        <div className="row playbar">
-          <button className="secondary" onClick={() => setPlaying((p) => !p)} disabled={locked}>
-            {playing ? 'Pause' : 'Play'}
-          </button>
-          <p className="hint">
-            {shownTime.toFixed(2)} s of {clip.duration.toFixed(1)} s. {brushHint}
-          </p>
-        </div>
-        {!working && <StatusLine status={status} working={false} />}
+        {choice && !working && (
+          <div className="choice-bar" role="status">
+            <p className="status">{status?.text ?? choiceText(choice.mode, choice.options.length)}</p>
+            <div className="row choice-row">
+              <button className="ghost small" onClick={() => changeChoice(-1)} disabled={choice.index === 0}>
+                Smaller
+              </button>
+              <button
+                className="ghost small"
+                onClick={() => changeChoice(1)}
+                disabled={choice.index === choice.options.length - 1}
+              >
+                Bigger
+              </button>
+              <button className="ghost small" onClick={dropChoice}>
+                Cancel
+              </button>
+              <button className="primary small grow" onClick={() => void applyChoice()}>
+                Apply
+              </button>
+            </div>
+          </div>
+        )}
+        {!(choice && !working) && (
+          <div className="row playbar">
+            <button className="secondary" onClick={() => setPlaying((p) => !p)} disabled={locked}>
+              {playing ? 'Pause' : 'Play'}
+            </button>
+            <p className="hint">
+              {shownTime.toFixed(2)} s of {clip.duration.toFixed(1)} s. {brushHint}
+            </p>
+          </div>
+        )}
+        {!working && !choice && <StatusLine status={status} working={false} />}
       </div>
 
       <div className="tabs" role="tablist">

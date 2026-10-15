@@ -4,7 +4,8 @@
   --text: #1d1d1f;
   --muted: #6e6e73;
   --line: #d9d9de;
-  --accent: #1a8f4c;
+  /* The violet of the app icon. Green stays for success and for Keep. */
+  --accent: #5b2eff;
   --accent-text: #ffffff;
   --check-a: #e4e4e9;
   --check-b: #ffffff;
@@ -20,8 +21,8 @@
     --text: #f2f2f5;
     --muted: #a0a0a8;
     --line: #34343a;
-    --accent: #2fb866;
-    --accent-text: #08130c;
+    --accent: #a08bff;
+    --accent-text: #140a33;
     --check-a: #2c2c31;
     --check-b: #1c1c1f;
     --ok: #4cd884;
@@ -595,4 +596,41 @@ button.small {
 
 .bottom-bar .add {
   width: 100%;
+}
+
+.choice-row {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.primary.small {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+}
+
+/* Shown in place of the Play row while a Keep or Remove part waits, so the whole stage stays visible. */
+.choice-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.choice-bar .status {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  flex: none;
+  border-radius: 28%;
 }

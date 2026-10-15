@@ -6,9 +6,10 @@ import type { InferenceSession } from 'onnxruntime-web';
 import { LOW, SIDE, samInput, samMask, samPick, samScale } from './samMath';
 import type { Prompt } from './tapTrack';
 
-export interface ObjectMask {
-  /** 0 or 255 per pixel, 255 inside the object. */
-  data: Uint8Array;
+export interface ObjectMasks {
+  /** 0 or 255 per pixel, 255 inside the object. With prompt.all, all 4 guesses, otherwise the chosen one. */
+  masks: Uint8Array[];
+  chosen: number;
   width: number;
   height: number;
 }
@@ -38,7 +39,7 @@ export function getSegmenter(): Promise<Sam> {
 }
 
 /** The mask of the object the prompt points at. Prompt points are normalized, 0 to 1. */
-export async function objectAt(sam: Sam, image: ImageBitmap, prompt: Prompt): Promise<ObjectMask> {
+export async function objectAt(sam: Sam, image: ImageBitmap, prompt: Prompt): Promise<ObjectMasks> {
   const { width, height } = image;
   const scale = samScale(width, height);
   const rw = Math.round(width * scale);
@@ -60,5 +61,6 @@ export async function objectAt(sam: Sam, image: ImageBitmap, prompt: Prompt): Pr
   const masks = decoded.masks.data as Float32Array;
   if (masks.length !== 4 * LOW * LOW) throw new Error(`Unexpected mask size ${masks.length}.`);
   const index = samPick(scores, masks, prompt.pick);
-  return { data: samMask(masks, index, width, height), width, height };
+  if (!prompt.all) return { masks: [samMask(masks, index, width, height)], chosen: 0, width, height };
+  return { masks: [0, 1, 2, 3].map((i) => samMask(masks, i, width, height)), chosen: index, width, height };
 }

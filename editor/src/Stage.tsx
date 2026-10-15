@@ -20,6 +20,8 @@ interface Props {
   onBrushEnd?(completed: boolean): void;
   /** A highlighted line over the image, in sticker pixels, such as the Keep or Remove mark. */
   mark?: { points: Point[]; color: string } | null;
+  /** A tinted picture over the image, scaled like the image, such as the part a Keep or Remove mark found. */
+  highlight?: CanvasImageSource | null;
 }
 
 /** Width of the Keep and Remove mark, in sticker pixels. */
@@ -35,7 +37,7 @@ type Gesture =
  * Two fingers always move, zoom, and rotate.
  */
 export function Stage(props: Props) {
-  const { image, width, height, version, transform, onChange, tool, brushSize, mark } = props;
+  const { image, width, height, version, transform, onChange, tool, brushSize, mark, highlight } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -49,6 +51,7 @@ export function Stage(props: Props) {
     if (!ctx) return;
     ctx.clearRect(0, 0, SIZE, SIZE);
     draw(ctx, image, width, height, transform);
+    if (highlight) draw(ctx, highlight, width, height, transform);
     if (mark && mark.points.length > 0) {
       // A white outline first, so a red mark shows on red and a green mark on green.
       ctx.save();
@@ -82,7 +85,7 @@ export function Stage(props: Props) {
       ctx.stroke();
       ctx.restore();
     }
-  }, [image, width, height, version, transform, cursor, tool, brushSize, mark]);
+  }, [image, width, height, version, transform, cursor, tool, brushSize, mark, highlight]);
 
   // React wheel listeners are passive, so the page would scroll too. Desktop testing only.
   useEffect(() => {

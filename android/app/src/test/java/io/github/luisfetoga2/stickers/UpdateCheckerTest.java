@@ -21,6 +21,8 @@ public class UpdateCheckerTest {
 
     @Test
     public void version_name_matches_the_app_scheme() {
-        assertEquals("0.1.13", UpdateChecker.versionName(13));
+        assertEquals("0.1.13", UpdateChecker.versionName(13, "0.2", 30));
+        assertEquals("0.2", UpdateChecker.versionName(30, "0.2", 30));
+        assertEquals("0.2.4", UpdateChecker.versionName(34, "0.2", 30));
     }
 }

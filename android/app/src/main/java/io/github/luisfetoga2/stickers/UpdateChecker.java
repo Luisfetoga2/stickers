@@ -52,9 +52,16 @@ final class UpdateChecker {
         }
     }
 
-    /** The version name of a build, in the same form as the app's versionName. */
+    /** The version name of a build, in the same form as the app's versionName (see app/build.gradle). */
     static String versionName(int build) {
-        return "0.1." + build;
+        return versionName(build, BuildConfig.VERSION_LINE, BuildConfig.VERSION_LINE_START);
+    }
+
+    static String versionName(int build, String line, int lineStart) {
+        if (build < lineStart) {
+            return "0.1." + build;
+        }
+        return build == lineStart ? line : line + "." + (build - lineStart);
     }
 
     /** The check on start: at most every few hours, and quiet unless a newer build exists. */

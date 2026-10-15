@@ -62,16 +62,19 @@ public class MagicTouchService extends Service {
             send(reply, MSG_ERROR, id, b -> b.putString("message", "Could not read the frame."));
             return true;
         }
-        magicTouch.segment(frame, points, labels, in.getBoolean("largest"), new MagicTouch.Callback() {
+        magicTouch.segment(frame, points, labels, in.getBoolean("largest"), in.getBoolean("all"),
+                new MagicTouch.Callback() {
             @Override
             public void onProgress(String message) {
                 send(reply, MSG_PROGRESS, id, b -> b.putString("message", message));
             }
 
             @Override
-            public void onMask(byte[] mask, int width, int height, long modelMs) {
+            public void onMask(byte[] packed, int width, int height, long modelMs, int count, int chosen) {
                 send(reply, MSG_MASK, id, b -> {
-                    b.putByteArray("mask", mask);
+                    b.putByteArray("mask", packed);
+                    b.putInt("count", count);
+                    b.putInt("chosen", chosen);
                     b.putInt("width", width);
                     b.putInt("height", height);
                     b.putLong("ms", modelMs);

@@ -26,7 +26,7 @@ final class MagicTouchClient {
     interface Callback {
         void onProgress(String message);
 
-        void onMask(byte[] mask, int width, int height, long modelMs);
+        void onMask(byte[] packed, int width, int height, long modelMs, int count, int chosen);
 
         void onError(String message);
     }
@@ -72,7 +72,8 @@ final class MagicTouchClient {
     }
 
     /** points holds normalized x, y pairs, labels one label per point. See MagicTouch.segment. */
-    void segment(String id, byte[] jpeg, float[] points, float[] labels, boolean largest, Callback callback) {
+    void segment(String id, byte[] jpeg, float[] points, float[] labels, boolean largest, boolean all,
+                 Callback callback) {
         main.removeCallbacks(stopWhenIdle);
         pending.put(id, callback);
         Runnable send = () -> {
@@ -83,6 +84,7 @@ final class MagicTouchClient {
             bundle.putFloatArray("points", points);
             bundle.putFloatArray("labels", labels);
             bundle.putBoolean("largest", largest);
+            bundle.putBoolean("all", all);
             message.setData(bundle);
             message.replyTo = replies;
             try {
@@ -124,7 +126,8 @@ final class MagicTouchClient {
             case MagicTouchService.MSG_MASK: {
                 Callback callback = pending.remove(id);
                 if (callback != null) {
-                    callback.onMask(b.getByteArray("mask"), b.getInt("width"), b.getInt("height"), b.getLong("ms"));
+                    callback.onMask(b.getByteArray("mask"), b.getInt("width"), b.getInt("height"), b.getLong("ms"),
+                            b.getInt("count"), b.getInt("chosen"));
                 }
                 stopLaterIfIdle();
                 return true;

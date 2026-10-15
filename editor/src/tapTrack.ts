@@ -7,8 +7,11 @@ import type { Point } from './transform';
 
 /** Grid cell size, in pixels, for finding the deepest point. Coarse is fast and steady. */
 const CELL = 8;
-/** The object counts as lost when its area grows or shrinks more than this between two frames. */
-const MAX_AREA_CHANGE = 3;
+/**
+ * The object counts as lost when its area grows or shrinks more than this between two frames.
+ * A real object rarely doubles in one frame. A bigger jump means the model took something else too.
+ */
+const MAX_AREA_CHANGE = 2;
 
 export function maskArea(mask: Uint8Array): number {
   let n = 0;
@@ -124,6 +127,8 @@ export interface Prompt {
   points: Point[];
   labels: number[];
   pick: 'largest' | 'first';
+  /** Return all 4 guesses, so the user can pick a smaller or larger one. */
+  all?: boolean;
 }
 
 /** Marks no farther apart than this share of the frame count as one tap. */
@@ -187,8 +192,162 @@ export function followPrompt(previous: Uint8Array, width: number, height: number
   };
 }
 
-/** Finds the object in one frame from a prompt and returns that frame's object mask. */
-export type SegmentFrame = (index: number, prompt: Prompt) => Promise<Uint8Array>;
+/**
+ * Splits a mask into components: groups of object pixels that touch, side by side or corner to corner.
+ * Returns a component number per pixel (0 outside the object, then 1, 2, …) and the count.
+ */
+export function components(mask: Uint8Array, width: number, height: number): { labels: Int32Array; count: number } {
+  const labels = new Int32Array(width * height);
+  const stack: number[] = [];
+  let count = 0;
+  for (let i = 0; i < labels.length; i++) {
+    if (mask[i] <= 127 || labels[i] !== 0) continue;
+    count++;
+    labels[i] = count;
+    stack.push(i);
+    while (stack.length > 0) {
+      const j = stack.pop()!;
+      const x = j % width;
+      const y = (j - x) / width;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const k = ny * width + nx;
+          if (mask[k] > 127 && labels[k] === 0) {
+            labels[k] = count;
+            stack.push(k);
+          }
+        }
+      }
+    }
+  }
+  return { labels, count };
+}
+
+/** A new mask with only the chosen components of labels. */
+function only(labels: Int32Array, keep: Set<number>): Uint8Array {
+  const out = new Uint8Array(labels.length);
+  for (let i = 0; i < labels.length; i++) if (keep.has(labels[i])) out[i] = 255;
+  return out;
+}
+
+/** How far around a mark point a component still counts as touched, in pixels. */
+const TOUCH_RADIUS = 6;
+
+/**
+ * Keeps the parts of a mask that the user's marks touch. The model sometimes adds things elsewhere in the
+ * frame that look alike, and the user never marked those. When no part is touched, such as a tap in a hole,
+ * the part nearest to the first mark stays.
+ */
+export function keepTouched(mask: Uint8Array, width: number, height: number, points: Point[]): Uint8Array {
+  const { labels, count } = components(mask, width, height);
+  if (count <= 1) return mask;
+  const keep = new Set<number>();
+  for (const p of points) {
+    const px = Math.floor(p.x);
+    const py = Math.floor(p.y);
+    for (let y = Math.max(0, py - TOUCH_RADIUS); y <= Math.min(height - 1, py + TOUCH_RADIUS); y++) {
+      for (let x = Math.max(0, px - TOUCH_RADIUS); x <= Math.min(width - 1, px + TOUCH_RADIUS); x++) {
+        const label = labels[y * width + x];
+        if (label !== 0) keep.add(label);
+      }
+    }
+  }
+  if (keep.size === 0) {
+    let best = 0;
+    let bestDistance = Infinity;
+    const p = points[0];
+    for (let i = 0; i < labels.length; i++) {
+      if (labels[i] === 0) continue;
+      const d = Math.hypot((i % width) - p.x, Math.floor(i / width) - p.y);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = labels[i];
+      }
+    }
+    keep.add(best);
+  }
+  return only(labels, keep);
+}
+
+/** The box around the object in the last frame grows by this share on each side for keepNear. */
+const NEAR_MARGIN = 0.25;
+
+/**
+ * Keeps the parts of a new frame's mask that belong to the object followed from the last frame:
+ * parts that overlap its last mask, or whose middle lies in its last box, grown by a margin.
+ * A part far away is something else that looks alike, so it goes.
+ */
+export function keepNear(mask: Uint8Array, previous: Uint8Array, width: number, height: number): Uint8Array {
+  const { labels, count } = components(mask, width, height);
+  const box = maskBox(previous, width, height);
+  if (count === 0 || !box) return mask;
+  const mx = (box.x1 - box.x0) * NEAR_MARGIN;
+  const my = (box.y1 - box.y0) * NEAR_MARGIN;
+  const sx = new Float64Array(count + 1);
+  const sy = new Float64Array(count + 1);
+  const n = new Float64Array(count + 1);
+  const keep = new Set<number>();
+  for (let i = 0; i < labels.length; i++) {
+    const label = labels[i];
+    if (label === 0) continue;
+    if (previous[i] > 127) keep.add(label);
+    sx[label] += i % width;
+    sy[label] += Math.floor(i / width);
+    n[label]++;
+  }
+  for (let label = 1; label <= count; label++) {
+    const cx = sx[label] / n[label];
+    const cy = sy[label] / n[label];
+    if (cx >= box.x0 - mx && cx <= box.x1 + mx && cy >= box.y0 - my && cy <= box.y1 + my) keep.add(label);
+  }
+  return keep.size === count ? mask : only(labels, keep);
+}
+
+/** Two guesses this alike (shared pixels over all their pixels) count as the same, so only one is offered. */
+const SAME_GUESS = 0.92;
+
+function overlap(a: Uint8Array, b: Uint8Array): number {
+  let both = 0;
+  let either = 0;
+  for (let i = 0; i < a.length; i++) {
+    const inA = a[i] > 127;
+    const inB = b[i] > 127;
+    if (inA && inB) both++;
+    if (inA || inB) either++;
+  }
+  return either === 0 ? 1 : both / either;
+}
+
+/**
+ * The model's guesses as choices for the user, smallest first: cleaned by keepTouched, without empty ones
+ * and without near copies. index is the choice that matches the guess the pick rule took.
+ */
+export function guessOptions(
+  guesses: Uint8Array[],
+  chosen: number,
+  width: number,
+  height: number,
+  points: Point[],
+): { options: Uint8Array[]; index: number } {
+  const cleaned = guesses
+    .map((mask, i) => ({ mask: keepTouched(mask, width, height, points), chosen: i === chosen }))
+    .map((g) => ({ ...g, area: maskArea(g.mask) }))
+    .filter((g) => g.area > 0)
+    .sort((a, b) => a.area - b.area);
+  const options: Array<{ mask: Uint8Array; chosen: boolean }> = [];
+  for (const g of cleaned) {
+    const same = options.find((o) => overlap(o.mask, g.mask) >= SAME_GUESS);
+    if (same) same.chosen ||= g.chosen;
+    else options.push({ mask: g.mask, chosen: g.chosen });
+  }
+  return { options: options.map((o) => o.mask), index: Math.max(0, options.findIndex((o) => o.chosen)) };
+}
+
+/** Finds the object in one frame from a prompt. With prompt.all it returns the model's 4 guesses, otherwise one. */
+export type SegmentFrame = (index: number, prompt: Prompt) => Promise<Uint8Array[]>;
 
 export interface TrackResult {
   /** One mask per frame, or null where the object was lost. */
@@ -197,14 +356,14 @@ export interface TrackResult {
 }
 
 /**
- * Finds the object in the start frame from the user's marks, then follows it forward and backward.
+ * Follows the object the user picked in the start frame forward and backward through the clip.
  * Following stops in a direction when the object leaves the picture or changes too much,
  * so one wrong frame does not spread through the rest of the clip.
  */
-export async function trackObject(
+export async function followObject(
   count: number,
   start: number,
-  points: Point[],
+  first: Uint8Array,
   width: number,
   height: number,
   segment: SegmentFrame,
@@ -212,8 +371,6 @@ export async function trackObject(
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const masks: Array<Uint8Array | null> = new Array(count).fill(null);
-  const first = await segment(start, marksPrompt(points, width, height));
-  if (maskArea(first) === 0) throw new Error('Nothing was found there. Tap or scribble on the middle of the object.');
   masks[start] = first;
   let done = 1;
   onStep(done);
@@ -224,8 +381,19 @@ export async function trackObject(
       signal?.throwIfAborted();
       const prompt = followPrompt(previous, width, height);
       if (!prompt) break;
-      const mask = await segment(i, prompt);
+      // Of the model's guesses, the one most like the last frame keeps the size the user picked.
+      let mask: Uint8Array | null = null;
+      let best = -1;
+      for (const guess of await segment(i, { ...prompt, all: true })) {
+        const near = keepNear(guess, previous, width, height);
+        const score = overlap(near, previous);
+        if (score > best) {
+          best = score;
+          mask = near;
+        }
+      }
       onStep(++done);
+      if (!mask) break;
       if (!sameObject(maskArea(previous), mask, width, prompt.points[0])) break;
       masks[i] = mask;
       previous = mask;

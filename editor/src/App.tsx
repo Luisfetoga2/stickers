@@ -5,6 +5,7 @@ import { isVideo, mayBeAnimated, openAnimatedImage, openVideo, type Clip } from 
 import { Cutout } from './cutout';
 import { kb } from './encode';
 import { firstUrl, shortUrl } from './links';
+import { Logo } from './Logo';
 import { PhotoEditor } from './PhotoEditor';
 import { StickersScreen } from './StickersScreen';
 import type { Status } from './types';
@@ -195,7 +196,10 @@ export function App() {
       ) : (
         <>
           <header className="top">
-            <h1>Sticker Bridge</h1>
+            <h1 className="brand">
+              <Logo />
+              Sticker Bridge
+            </h1>
             {media && (
               <button className="ghost" onClick={pick} disabled={busy}>
                 Pick another

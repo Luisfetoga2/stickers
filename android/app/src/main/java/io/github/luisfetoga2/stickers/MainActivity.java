@@ -640,16 +640,19 @@ public class MainActivity extends Activity {
     }
 
     /** Sends a Magic Touch mask to the editor. The mask goes as base64 bytes, 0 or 255 per pixel. */
-    private void sendObjectResult(String id, boolean ok, byte[] mask, int width, int height, long modelMs,
-                                  String delegate, String message) {
+    /** packed holds count masks as bits (Sam.pack). chosen is the guess the pick rule takes. */
+    private void sendObjectResult(String id, boolean ok, byte[] packed, int width, int height, long modelMs,
+                                  int count, int chosen, String message) {
         try {
             JSONObject result = new JSONObject().put("id", id).put("ok", ok);
             if (ok) {
-                result.put("mask", Base64.getEncoder().encodeToString(mask))
+                result.put("bits", Base64.getEncoder().encodeToString(packed))
+                        .put("count", count)
+                        .put("chosen", chosen)
                         .put("width", width)
                         .put("height", height)
                         .put("ms", modelMs)
-                        .put("delegate", delegate);
+                        .put("delegate", "CPU");
             } else {
                 result.put("message", message);
             }
@@ -752,6 +755,7 @@ public class MainActivity extends Activity {
             float[] xy;
             float[] labels;
             boolean largest;
+            boolean all;
             try {
                 jpeg = Base64.getDecoder().decode(jpegBase64);
                 JSONObject json = new JSONObject(prompt);
@@ -766,11 +770,12 @@ public class MainActivity extends Activity {
                     labels[i] = (float) labelArray.getDouble(i);
                 }
                 largest = "largest".equals(json.optString("pick"));
+                all = json.optBoolean("all");
             } catch (IllegalArgumentException | JSONException e) {
-                sendObjectResult(id, false, null, 0, 0, 0, "", "Could not read the frame.");
+                sendObjectResult(id, false, null, 0, 0, 0, 0, 0, "Could not read the frame.");
                 return;
             }
-            main.post(() -> magicTouch.segment(id, jpeg, xy, labels, largest, new MagicTouchClient.Callback() {
+            main.post(() -> magicTouch.segment(id, jpeg, xy, labels, largest, all, new MagicTouchClient.Callback() {
                 @Override
                 public void onProgress(String message) {
                     try {
@@ -781,13 +786,13 @@ public class MainActivity extends Activity {
                 }
 
                 @Override
-                public void onMask(byte[] mask, int width, int height, long modelMs) {
-                    sendObjectResult(id, true, mask, width, height, modelMs, "CPU", null);
+                public void onMask(byte[] packed, int width, int height, long modelMs, int count, int chosen) {
+                    sendObjectResult(id, true, packed, width, height, modelMs, count, chosen, null);
                 }
 
                 @Override
                 public void onError(String message) {
-                    sendObjectResult(id, false, null, 0, 0, 0, "", message);
+                    sendObjectResult(id, false, null, 0, 0, 0, 0, 0, message);
                 }
             }));
         }

@@ -55,6 +55,18 @@ public class SamTest {
     }
 
     @Test
+    public void packPutsEightPixelsInAByte() {
+        byte[] packed = Sam.pack(new byte[][] {
+                {(byte) 255, 0, 0, 0, 0, 0, 0, 0, 0, (byte) 255},
+                {0, (byte) 255, 0, 0, 0, 0, 0, 0, 0, 0},
+        });
+        assertEquals(3, packed.length);
+        assertEquals(1, packed[0]);
+        assertEquals(2 | 8, packed[1]);
+        assertEquals(0, packed[2]);
+    }
+
+    @Test
     public void maskScalesTheGuessBackToTheFrame() {
         byte[] mask = Sam.mask(guesses(64, 0, 0, 0), 0, 512, 256);
         assertEquals((byte) 255, mask[10 * 512 + 10]);
