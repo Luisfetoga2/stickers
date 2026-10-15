@@ -1,5 +1,6 @@
 import { DEFAULT_CHROMA, chromaKey, detectKeyColor } from './chroma';
 import { blobToBase64 } from './encode';
+import type { Point } from './transform';
 
 export interface SharedFile {
   url: string;
@@ -72,8 +73,31 @@ interface BackgroundResult {
 interface ShellEvents extends AppEvents {
   onBackgroundResult(result: BackgroundResult): void;
   onBackgroundProgress(progress: { id: string; message: string }): void;
-  onModelResult(result: { id: string; ok: boolean; url?: string; message?: string }): void;
-  onModelProgress(progress: { id: string; message: string }): void;
+  onObjectResult(result: ObjectResultMessage): void;
+  onObjectProgress(progress: { id: string; message: string }): void;
+}
+
+interface ObjectResultMessage {
+  id: string;
+  ok: boolean;
+  /** Base64 bytes, 0 or 255 per pixel. */
+  mask?: string;
+  width?: number;
+  height?: number;
+  ms?: number;
+  delegate?: string;
+  message?: string;
+}
+
+export interface ObjectResult {
+  /** 0 or 255 per pixel, the same size as the frame. */
+  mask: Uint8Array;
+  width: number;
+  height: number;
+  /** Time Magic Touch itself took. */
+  modelMs: number;
+  /** "GPU" or "CPU" in the app, "browser" in a desktop browser. */
+  delegate: string;
 }
 
 /** Methods the Android shell exposes with addJavascriptInterface. Only strings and booleans cross over. */
@@ -88,7 +112,7 @@ interface NativeBridge {
   appVersion(): string;
   openUpdate(): void;
   checkForUpdate(): void;
-  prepareSegmenterModel(id: string): void;
+  segmentObject(id: string, jpegBase64: string, points: string): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -125,8 +149,11 @@ export interface Bridge {
   openUpdate(): void;
   /** Asks GitHub now. The answer arrives through onUpdateCheck. Returns false when it cannot ask here. */
   checkForUpdate(): boolean;
-  /** The address of the Magic Touch model. The app downloads it the first time, which can take a while. */
-  segmenterModel(onProgress: (message: string) => void): Promise<string>;
+  /**
+   * Finds the object under a stroke in one frame with Magic Touch. points are normalized, at least 3.
+   * The first call downloads the model (about 30 MB), so onProgress reports that.
+   */
+  segmentObject(jpeg: Blob, points: Point[], onProgress: (message: string) => void): Promise<ObjectResult>;
 }
 
 function toLibrary(native: NativeLibrary): StickerLibrary {
@@ -150,7 +177,10 @@ interface Pending {
 
 function nativeBridge(native: NativeBridge): Bridge {
   const pending = new Map<string, Pending>();
-  const models = new Map<string, { resolve(url: string): void; reject(err: Error): void; onProgress(m: string): void }>();
+  const objects = new Map<
+    string,
+    { resolve(result: ObjectResult): void; reject(err: Error): void; onProgress(m: string): void }
+  >();
   let nextId = 1;
 
   return {
@@ -176,15 +206,27 @@ function nativeBridge(native: NativeBridge): Bridge {
         onBackgroundProgress({ id, message }) {
           pending.get(id)?.onProgress(message);
         },
-        onModelResult({ id, ok, url, message }) {
-          const m = models.get(id);
-          if (!m) return;
-          models.delete(id);
-          if (ok && url) m.resolve(url);
-          else m.reject(new Error(message ?? 'Could not get the Magic Touch model.'));
+        onObjectResult(result) {
+          const o = objects.get(result.id);
+          if (!o) return;
+          objects.delete(result.id);
+          if (!result.ok || !result.mask) {
+            o.reject(new Error(result.message ?? 'Magic Touch failed.'));
+            return;
+          }
+          const bytes = atob(result.mask);
+          const mask = new Uint8Array(bytes.length);
+          for (let i = 0; i < bytes.length; i++) mask[i] = bytes.charCodeAt(i);
+          o.resolve({
+            mask,
+            width: result.width ?? 0,
+            height: result.height ?? 0,
+            modelMs: result.ms ?? 0,
+            delegate: result.delegate ?? '',
+          });
         },
-        onModelProgress({ id, message }) {
-          models.get(id)?.onProgress(message);
+        onObjectProgress({ id, message }) {
+          objects.get(id)?.onProgress(message);
         },
       };
       native.ready();
@@ -223,11 +265,12 @@ function nativeBridge(native: NativeBridge): Bridge {
       native.checkForUpdate();
       return true;
     },
-    segmenterModel(onProgress) {
+    async segmentObject(jpeg, points, onProgress) {
       const id = String(nextId++);
+      const base64 = await blobToBase64(jpeg);
       return new Promise((resolve, reject) => {
-        models.set(id, { resolve, reject, onProgress });
-        native.prepareSegmenterModel(id);
+        objects.set(id, { resolve, reject, onProgress });
+        native.segmentObject(id, base64, JSON.stringify(points.flatMap((p) => [p.x, p.y])));
       });
     },
     async removeBackground(jpeg, onProgress) {
@@ -256,8 +299,8 @@ function browserBridge(): Bridge {
         ...e,
         onBackgroundResult() {},
         onBackgroundProgress() {},
-        onModelResult() {},
-        onModelProgress() {},
+        onObjectResult() {},
+        onObjectProgress() {},
       };
     },
     pickFile() {
@@ -297,9 +340,16 @@ function browserBridge(): Bridge {
     checkForUpdate() {
       return false;
     },
-    async segmenterModel() {
-      // In a desktop browser, `npm run dev-model` puts the model here. The app downloads it on the phone instead.
-      return '/dev-models/interactive_segmentation.task';
+    async segmentObject(jpeg, points) {
+      // The web engine is for testing on a computer only. The app build drops this branch.
+      if (!import.meta.env.DEV) throw new Error('Magic Touch works only in the Android app.');
+      const { getSegmenter, objectAt } = await import('./segmenter');
+      const segmenter = await getSegmenter();
+      const image = await createImageBitmap(jpeg);
+      const started = performance.now();
+      const { data, width, height } = objectAt(segmenter, image, points);
+      image.close();
+      return { mask: data, width, height, modelMs: performance.now() - started, delegate: 'browser' };
     },
     async removeBackground(jpeg, onProgress) {
       // A fake cutout for testing: removes the frame's border color, like a green screen. The real one runs in the app.

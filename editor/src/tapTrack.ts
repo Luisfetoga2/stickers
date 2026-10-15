@@ -160,3 +160,23 @@ export async function trackObject(
   }
   return { masks, found: masks.filter((m) => m !== null).length };
 }
+
+/** Strokes need a few points. A single point is too little for the model, so a tap becomes a short stroke. */
+const TAP_SPREAD = 0.01;
+
+/** Points inside the image, in 0 to 1. Points outside it crash the engine. */
+function clampPoint(p: Point): Point {
+  return { x: Math.min(0.999, Math.max(0.001, p.x)), y: Math.min(0.999, Math.max(0.001, p.y)) };
+}
+
+/** Turns one or more normalized points into the stroke the model expects. */
+export function strokePoints(points: Point[]): Point[] {
+  if (points.length >= 3) return points.map(clampPoint);
+  const p = points[0];
+  return [
+    { x: p.x - TAP_SPREAD, y: p.y - TAP_SPREAD },
+    { x: p.x, y: p.y },
+    { x: p.x + TAP_SPREAD, y: p.y + TAP_SPREAD },
+  ].map(clampPoint);
+}
+

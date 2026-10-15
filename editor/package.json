@@ -4,11 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "prepare-assets": "node scripts/prepare-assets.mjs",
     "dev-model": "node scripts/dev-model.mjs",
-    "predev": "node scripts/prepare-assets.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/prepare-assets.mjs",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "vitest run"

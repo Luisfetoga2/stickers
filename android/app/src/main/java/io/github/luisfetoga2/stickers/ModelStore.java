@@ -9,8 +9,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Downloads the Magic Touch model (about 30 MB) once, for Keep and Remove in videos.
@@ -20,10 +18,6 @@ final class ModelStore {
 
     interface Listener {
         void onProgress(String message);
-
-        void onReady(File file);
-
-        void onError(String message);
     }
 
     static final String FILE_NAME = "interactive_segmentation.task";
@@ -32,7 +26,6 @@ final class ModelStore {
     /** A real model is about 30 MB. Anything much smaller is an error page or a cut download. */
     private static final long MIN_SIZE = 10L * 1024 * 1024;
 
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final File file;
 
     ModelStore(Context context) {
@@ -43,24 +36,17 @@ final class ModelStore {
         return file;
     }
 
-    void ensure(Listener listener) {
-        worker.execute(() -> {
-            if (file.isFile() && file.length() >= MIN_SIZE) {
-                listener.onReady(file);
-                return;
-            }
+    /** Returns the model file, downloading it first when needed. Blocks, so call it on a worker thread. */
+    synchronized File ensureBlocking(Listener listener) throws IOException {
+        if (!(file.isFile() && file.length() >= MIN_SIZE)) {
             try {
                 download(listener);
-                listener.onReady(file);
             } catch (IOException e) {
-                listener.onError("Could not download the Magic Touch model: " + e.getMessage()
-                        + ". Make sure that the phone is online, then try again.");
+                throw new IOException("Could not download the Magic Touch model: " + e.getMessage()
+                        + ". Make sure that the phone is online, then try again.", e);
             }
-        });
-    }
-
-    void shutdown() {
-        worker.shutdown();
+        }
+        return file;
     }
 
     private void download(Listener listener) throws IOException {

@@ -21,8 +21,7 @@ import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { followOffsets } from './follow';
-import { getSegmenter, objectAt } from './segmenter';
-import { trackObject } from './tapTrack';
+import { strokePoints, trackObject } from './tapTrack';
 import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
 import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
 import { kb } from './encode';
@@ -508,11 +507,12 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     setWorking('cutout');
     const verb = mode === 'keep' ? 'Keep' : 'Remove';
     try {
-      const url = await bridge.segmenterModel((text) => setStatus({ kind: 'info', text }));
-      setStatus({ kind: 'info', text: 'Starting Magic Touch…' });
-      const segmenter = await getSegmenter(url);
       const { width, height, count } = cutout;
       const began = performance.now();
+      let modelMs = 0;
+      let delegate = '';
+      const frameCanvas = newCanvas(width, height);
+      const frameCtx = ctx2d(frameCanvas);
       const result = await trackObject(
         count,
         cutout.indexAt(shownTime),
@@ -520,20 +520,24 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         width,
         height,
         async (i, framePoints) => {
-          // Let the screen show progress and take a Cancel tap between frames.
-          await new Promise((r) => setTimeout(r, 0));
-          const mask = objectAt(
-            segmenter,
-            cutout.source(i),
-            framePoints.map((p) => ({ x: p.x / width, y: p.y / height })),
+          frameCtx.drawImage(cutout.source(i), 0, 0);
+          const jpeg = await new Promise<Blob>((resolve, reject) =>
+            frameCanvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not read a frame.'))), 'image/jpeg', 0.9),
           );
-          return fitMask(mask.data, mask.width, mask.height, width, height);
+          const stroke = strokePoints(framePoints.map((p) => ({ x: p.x / width, y: p.y / height })));
+          const result = await bridge.segmentObject(jpeg, stroke, (text) => setStatus({ kind: 'info', text }));
+          modelMs += result.modelMs;
+          delegate = result.delegate;
+          return fitMask(result.mask, result.width, result.height, width, height);
         },
         (done) => {
           const perFrame = (performance.now() - began) / 1000 / done;
           setStatus({
             kind: 'info',
-            text: `${verb}: frame ${done} of ${count}, ${perFrame.toFixed(2)} s per frame, about ${Math.ceil((count - done) * perFrame)} s left.`,
+            text:
+              `${verb}: frame ${done} of ${count}, ${perFrame.toFixed(2)} s per frame` +
+              ` (Magic Touch ${(modelMs / 1000 / done).toFixed(2)} s on ${delegate}),` +
+              ` about ${Math.ceil((count - done) * perFrame)} s left.`,
           });
         },
         controller.signal,

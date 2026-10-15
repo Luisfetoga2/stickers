@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { strokePoints } from './segmenter';
+import { strokePoints } from './tapTrack';
 
 describe('strokePoints', () => {
   it('turns a tap into a short stroke around it', () => {
