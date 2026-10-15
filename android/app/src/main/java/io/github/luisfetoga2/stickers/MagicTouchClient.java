@@ -148,14 +148,14 @@ final class MagicTouchClient {
                 return true;
             }
             case MagicTouchService.MSG_ERROR: {
-                String message = b.getString("message");
+                String text = b.getString("message");
                 if (b.getBoolean("engineFailed") && inUse != null) {
                     String other = markBad(inUse);
-                    message += ". Mark the object again to use the " + other + ".";
+                    text += ". Mark the object again to use the " + other + ".";
                 }
                 Callback callback = pending.remove(id);
                 if (callback != null) {
-                    callback.onError(message);
+                    callback.onError(text);
                 }
                 stopLaterIfIdle();
                 return true;
