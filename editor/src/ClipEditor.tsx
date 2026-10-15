@@ -41,14 +41,14 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
 ];
 
 /** After an AI cutout, Keep and Remove come first: they fix whole objects in every frame. */
-type Tab = 'cutout' | 'trim' | 'frame' | 'size';
+type Tab = 'cutout' | 'trim' | 'cut' | 'file';
 
 /** The controls under the stage, one group at a time, so the stage and the progress stay in view. */
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'cutout', label: 'Cutout' },
   { id: 'trim', label: 'Trim' },
-  { id: 'frame', label: 'Frame' },
-  { id: 'size', label: 'Size' },
+  { id: 'cut', label: 'Cut' },
+  { id: 'file', label: 'File' },
 ];
 
 const AI_TOOLS: Array<{ id: Tool; label: string }> = [
@@ -1001,7 +1001,7 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
         </div>
       )}
 
-      {tab === 'frame' && (
+      {tab === 'cut' && (
         <div className="panel">
           <section className="controls">
             <MoveControls
@@ -1015,7 +1015,7 @@ export function ClipEditor({ clip, busy, status, setStatus, onAdd }: EditorProps
         </div>
       )}
 
-      {tab === 'size' && (
+      {tab === 'file' && (
         <div className="panel">
           <section className="controls">
             {fresh && quality !== null ? (
