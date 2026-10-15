@@ -81,9 +81,6 @@ final class MagicTouch {
         worker.execute(() -> {
             try {
                 File file = models.ensureBlocking(callback::onProgress);
-                if (gpuBad && cpuBad) {
-                    throw new IllegalStateException("Magic Touch crashed on both the GPU and the CPU of this phone");
-                }
                 if (use == null) {
                     timeAndPick(file, frame, points, gpuBad, cpuBad, callback);
                     return;
@@ -108,7 +105,7 @@ final class MagicTouch {
     /**
      * Runs the first frame on each delegate that has not crashed before, twice, and times the second run.
      * The first run of a GPU prepares its programs, so timing it would be unfair.
-     * The CPU goes first: it needs no GPU setup, so a fresh process tries it most safely.
+     * The GPU goes first, because it worked on the phones tried so far.
      */
     private void timeAndPick(File file, Bitmap frame, float[] points, boolean gpuBad, boolean cpuBad,
                              Callback callback) throws Throwable {
@@ -116,20 +113,20 @@ final class MagicTouch {
         Result cpu = null;
         Result gpu = null;
         Throwable error = null;
-        if (!cpuBad) {
-            callback.onProbe("CPU");
-            try {
-                runWith(file, Delegate.CPU, frame, points);
-                cpu = runWith(file, Delegate.CPU, frame, points);
-            } catch (Throwable e) {
-                error = e;
-            }
-        }
         if (!gpuBad) {
             callback.onProbe("GPU");
             try {
                 runWith(file, Delegate.GPU, frame, points);
                 gpu = runWith(file, Delegate.GPU, frame, points);
+            } catch (Throwable e) {
+                error = e;
+            }
+        }
+        if (!cpuBad) {
+            callback.onProbe("CPU");
+            try {
+                runWith(file, Delegate.CPU, frame, points);
+                cpu = runWith(file, Delegate.CPU, frame, points);
             } catch (Throwable e) {
                 error = e;
             }

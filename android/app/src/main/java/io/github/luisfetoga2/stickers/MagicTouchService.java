@@ -10,7 +10,6 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
-import android.os.Process;
 import android.os.RemoteException;
 
 import java.util.function.Consumer;
@@ -18,7 +17,7 @@ import java.util.function.Consumer;
 /**
  * Runs Magic Touch in its own process (":magic" in the manifest).
  * A native crash in MediaPipe ends only this process, and the app tells the user instead of closing.
- * When the app unbinds, the process ends, which frees all of the model's memory at once.
+ * When the app unbinds, the segmenter closes, which frees the model's native memory.
  */
 public class MagicTouchService extends Service {
 
@@ -44,10 +43,9 @@ public class MagicTouchService extends Service {
 
     @Override
     public void onDestroy() {
+        // No killProcess here: a rebind can come while the process ends, and the app would take that for a crash.
         magicTouch.close();
         super.onDestroy();
-        // This process only runs Magic Touch. Ending it frees the model's native memory right away.
-        Process.killProcess(Process.myPid());
     }
 
     private boolean handle(Message msg) {

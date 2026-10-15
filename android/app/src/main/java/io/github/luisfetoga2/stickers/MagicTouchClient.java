@@ -36,6 +36,10 @@ final class MagicTouchClient {
     private static final String DELEGATE = "delegate";
     private static final String GPU_BAD = "gpuBad";
     private static final String CPU_BAD = "cpuBad";
+    /** The build that wrote the marks. A new build clears them, since it can fix what crashed. */
+    private static final String MARKS_BUILD = "marksBuild";
+    /** Android writes the exit record a moment after the process dies. */
+    private static final long EXIT_RECORD_WAIT_MS = 800;
 
     private final Context context;
     private final SharedPreferences prefs;
@@ -75,11 +79,18 @@ final class MagicTouchClient {
     MagicTouchClient(Context context) {
         this.context = context.getApplicationContext();
         this.prefs = this.context.getSharedPreferences("magic_touch", Context.MODE_PRIVATE);
+        if (prefs.getInt(MARKS_BUILD, -1) != BuildConfig.VERSION_CODE) {
+            prefs.edit().clear().putInt(MARKS_BUILD, BuildConfig.VERSION_CODE).apply();
+        }
     }
 
     void segment(String id, byte[] jpeg, float[] points, Callback callback) {
         main.removeCallbacks(stopWhenIdle);
         pending.put(id, callback);
+        if (prefs.getBoolean(GPU_BAD, false) && prefs.getBoolean(CPU_BAD, false)) {
+            // Both marks leave nothing to run. Try both again rather than refuse for good.
+            prefs.edit().remove(GPU_BAD).remove(CPU_BAD).remove(DELEGATE).apply();
+        }
         Runnable send = () -> {
             Message message = Message.obtain(null, MagicTouchService.MSG_SEGMENT);
             Bundle bundle = new Bundle();
@@ -156,23 +167,33 @@ final class MagicTouchClient {
     }
 
     /**
-     * The service process died, most likely in native code. The delegate it was trying, or the one it uses,
-     * is marked as crashing this phone, and the next try uses the other one.
+     * The service process died. Android's exit record says why. Only a native crash while a delegate ran
+     * marks that delegate as crashing this phone. Other causes, such as low memory, mark nothing.
      */
     private void serviceDied() {
-        String crashed = probing != null ? probing : prefs.getString(DELEGATE, null);
+        String delegate = probing != null ? probing : prefs.getString(DELEGATE, null);
         probing = null;
-        String message;
-        if (crashed != null) {
-            prefs.edit().putBoolean("GPU".equals(crashed) ? GPU_BAD : CPU_BAD, true).remove(DELEGATE).apply();
-            String other = "GPU".equals(crashed) ? "CPU" : "GPU";
-            message = "Magic Touch crashed on this phone's " + crashed + ". From now on it uses the " + other
-                    + ". Mark the object again.";
-        } else {
-            message = "Magic Touch crashed. Mark the object again.";
-        }
         unbind();
-        fail(message);
+        // Fail only the requests that were running, not ones that start while Android writes the record.
+        List<Callback> lost = new ArrayList<>(pending.values());
+        pending.clear();
+        waiting.clear();
+        main.postDelayed(() -> {
+            ExitReasons.Exit exit = ExitReasons.lastExit(context, ":magic");
+            String why = exit == null ? "Android gave no reason" : exit.summary;
+            String message;
+            if (exit != null && exit.nativeCrash && delegate != null) {
+                prefs.edit().putBoolean("GPU".equals(delegate) ? GPU_BAD : CPU_BAD, true).remove(DELEGATE).apply();
+                String other = "GPU".equals(delegate) ? "CPU" : "GPU";
+                message = "Magic Touch crashed on this phone's " + delegate + " (" + why + "). From now on it uses the "
+                        + other + ". Mark the object again.";
+            } else {
+                message = "Magic Touch stopped (" + why + "). Mark the object again.";
+            }
+            for (Callback callback : lost) {
+                callback.onError(message);
+            }
+        }, EXIT_RECORD_WAIT_MS);
     }
 
     private void fail(String message) {
