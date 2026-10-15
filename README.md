@@ -39,6 +39,10 @@ The app works on Android 11 or later, on phones with a 64-bit ARM processor.
 - Tap Play to watch the sticker loop in the editor.
 - For a green screen video, tap "Green screen". If the wrong color is gone, tap "Pick color" and tap the screen in the video.
 - For any other video, tap "AI cutout". Trim and frame rate lock while the cutout is on.
+- After an AI cutout, use Keep and Remove to fix whole objects. Tap or scribble on something in any frame.
+  The app finds that object with Magic Touch and follows it through the other frames.
+  Keep adds it to the cutout, and Remove cuts it out.
+  The first use downloads the Magic Touch model, about 30 MB, once.
 - Erase and Restore change every frame at once.
 - After an AI cutout, turn on "Follow the subject" to keep the subject in one place while it moves.
 
@@ -75,7 +79,7 @@ WhatsApp needs 3 to 30 stickers in a pack, so the app fills a new pack with copi
 When a pack has 30 stickers, the next sticker starts a new pack.
 
 Photos, videos, and background removal stay on the phone.
-The app uses the internet only for post links, for yt-dlp updates, for the update notice, and for the one-time ML Kit model download.
+The app uses the internet only for post links, for yt-dlp updates, for the update notice, and for the one-time ML Kit and Magic Touch model downloads.
 
 ## Build
 
@@ -91,6 +95,7 @@ npm run dev
 ```
 
 In a desktop browser, the editor runs without the Android shell.
+To test Keep and Remove there, run `npm run dev-model` once. It downloads the Magic Touch model into `dev-models/`, which stays out of the app.
 "Add to WhatsApp" downloads the WebP file, and background removal uses a fake oval cutout.
 
 To run the tests, run `npm test` in `editor/`.

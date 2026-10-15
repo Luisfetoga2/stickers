@@ -1,6 +1,6 @@
 import { frameTimes } from './animate';
 import type { FrameCallback } from './clip';
-import { alphaCenter, fillGaps } from './follow';
+import { fillGaps } from './follow';
 import { ctx2d, newCanvas } from './mask';
 import type { Point, Transform } from './transform';
 
@@ -31,8 +31,6 @@ export async function readFrames(
 
 /** Longest side of the frames the editor processes. Stickers are 512 px, so this leaves a little room to zoom. */
 export const WORK_SIDE = 640;
-/** Longest side of the copy used to find the subject's center. */
-const CENTER_SIDE = 96;
 /** Longest side of the frames sent to ML Kit. Smaller is faster, and the mask is scaled back up. */
 const MODEL_SIDE = 512;
 export const MAX_CUTOUT_FRAMES = 150;
@@ -72,16 +70,69 @@ export function workSize(width: number, height: number): { width: number; height
   return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
 
-/** A trimmed clip with its background removed frame by frame, at work size. */
+/** Undo steps kept for Keep and Remove. Each one copies every frame's mask. */
+const MASK_UNDO_LIMIT = 3;
+
+/** The alpha-weighted center of a mask, or null when it is empty. Every second pixel is enough. */
+export function maskCenter(mask: Uint8Array, width: number, height: number): Point | null {
+  let sum = 0;
+  let sx = 0;
+  let sy = 0;
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      const a = mask[y * width + x];
+      if (a === 0) continue;
+      sum += a;
+      sx += x * a;
+      sy += y * a;
+    }
+  }
+  return sum === 0 ? null : { x: sx / sum + 0.5, y: sy / sum + 0.5 };
+}
+
+/** Changes a mask in place: Keep adds an object to it, and Remove cuts an object out of it. */
+export function applyObject(mask: Uint8Array, object: Uint8Array, mode: 'keep' | 'remove'): void {
+  if (mode === 'keep') {
+    for (let i = 0; i < mask.length; i++) if (object[i] > mask[i]) mask[i] = object[i];
+  } else {
+    for (let i = 0; i < mask.length; i++) {
+      const left = 255 - object[i];
+      if (left < mask[i]) mask[i] = left;
+    }
+  }
+}
+
+/**
+ * A trimmed clip with its background removed frame by frame, at work size.
+ * It keeps each frame's picture and its mask apart, so Keep can bring back pixels that the first cutout removed.
+ */
 export class ClipCutout {
+  /** The subject's center in each frame, in work pixels. Follow the subject uses it. */
+  centers: Point[];
+  private undoStack: Uint8Array[][] = [];
+  private readonly out: HTMLCanvasElement;
+  private readonly outCtx: CanvasRenderingContext2D;
+  private readonly maskCanvas: HTMLCanvasElement;
+  private readonly maskCtx: CanvasRenderingContext2D;
+  private readonly maskImage: ImageData;
+
   private constructor(
     readonly start: number,
     readonly fps: number,
     readonly times: number[],
-    private frames: ImageBitmap[],
-    /** The subject's center in each frame, in work pixels. Follow the subject uses it. */
-    readonly centers: Point[],
-  ) {}
+    private sources: ImageBitmap[],
+    private masks: Uint8Array[],
+    readonly width: number,
+    readonly height: number,
+  ) {
+    this.out = newCanvas(width, height);
+    this.outCtx = ctx2d(this.out);
+    this.maskCanvas = newCanvas(width, height);
+    this.maskCtx = ctx2d(this.maskCanvas);
+    this.maskImage = this.maskCtx.createImageData(width, height);
+    this.maskImage.data.fill(255);
+    this.centers = this.findCenters();
+  }
 
   static async build(
     clip: FrameSource,
@@ -109,13 +160,8 @@ export class ClipCutout {
     const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
     if (!maskCtx) throw new Error('Canvas is not available.');
 
-    const frames: ImageBitmap[] = [];
-    const centers: Array<Point | null> = [];
-    const centerScale = Math.min(1, CENTER_SIDE / Math.max(width, height));
-    const small = newCanvas(Math.max(1, Math.round(width * centerScale)), Math.max(1, Math.round(height * centerScale)));
-    const smallCtx = small.getContext('2d', { willReadFrequently: true });
-    if (!smallCtx) throw new Error('Canvas is not available.');
     let sources: ImageBitmap[] = [];
+    const masks: Uint8Array[] = [];
     let modelMsTotal = 0;
     let modelReports = 0;
     try {
@@ -136,16 +182,12 @@ export class ClipCutout {
         const settled = await Promise.allSettled(pending);
         sources = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
       }
+      if (sources.length !== times.length) throw new Error('Some frames could not be read.');
 
       const began = performance.now();
       for (let i = 0; i < times.length; i++) {
         signal?.throwIfAborted();
-        workCtx.globalCompositeOperation = 'source-over';
-        workCtx.clearRect(0, 0, width, height);
-        workCtx.drawImage(sources[i], 0, 0);
-        sources[i].close();
-        modelCtx.drawImage(work, 0, 0, model.width, model.height);
-
+        modelCtx.drawImage(sources[i], 0, 0, model.width, model.height);
         const { mask, modelMs } = await removeBackground(await toJpeg(model));
         if (modelMs !== null) {
           modelMsTotal += modelMs;
@@ -156,19 +198,11 @@ export class ClipCutout {
         maskCtx.clearRect(0, 0, width, height);
         maskCtx.drawImage(maskBitmap, 0, 0, width, height);
         maskBitmap.close();
-        const pixels = maskCtx.getImageData(0, 0, width, height);
-        hardenAlpha(pixels.data);
-        maskCtx.putImageData(pixels, 0, 0);
-
-        workCtx.globalCompositeOperation = 'destination-in';
-        workCtx.drawImage(maskCanvas, 0, 0);
-        workCtx.globalCompositeOperation = 'source-over';
-        frames.push(await createImageBitmap(work));
-
-        smallCtx.clearRect(0, 0, small.width, small.height);
-        smallCtx.drawImage(work, 0, 0, small.width, small.height);
-        const center = alphaCenter(smallCtx.getImageData(0, 0, small.width, small.height).data, small.width, small.height);
-        centers.push(center && { x: center.x / centerScale, y: center.y / centerScale });
+        const pixels = maskCtx.getImageData(0, 0, width, height).data;
+        hardenAlpha(pixels);
+        const alpha = new Uint8Array(width * height);
+        for (let p = 0; p < alpha.length; p++) alpha[p] = pixels[p * 4 + 3];
+        masks.push(alpha);
 
         onProgress({
           phase: 'cutting',
@@ -179,41 +213,81 @@ export class ClipCutout {
         });
       }
     } catch (err) {
-      for (const f of frames) f.close();
+      for (const b of sources) b.close();
       throw err;
     } finally {
-      for (const b of sources) b.close();
       work.width = 0;
       model.width = 0;
       maskCanvas.width = 0;
-      small.width = 0;
     }
-    return new ClipCutout(start, fps, times, frames, fillGaps(centers, { x: width / 2, y: height / 2 }));
-  }
-
-  get width(): number {
-    return this.frames[0]?.width ?? 0;
-  }
-
-  get height(): number {
-    return this.frames[0]?.height ?? 0;
+    return new ClipCutout(start, fps, times, sources, masks, width, height);
   }
 
   get count(): number {
-    return this.frames.length;
+    return this.sources.length;
+  }
+
+  get canUndo(): boolean {
+    return this.undoStack.length > 0;
   }
 
   indexAt(seconds: number): number {
     return Math.max(0, Math.min(this.count - 1, Math.floor((seconds - this.start) * this.fps + 1e-6)));
   }
 
-  frame(index: number): ImageBitmap {
-    return this.frames[index];
+  /** The frame's original picture, before any cutout. */
+  source(index: number): ImageBitmap {
+    return this.sources[index];
+  }
+
+  /** One cut-out frame. The same canvas is reused, so draw it right away. */
+  frame(index: number): HTMLCanvasElement {
+    const mask = this.masks[index];
+    const data = this.maskImage.data;
+    for (let i = 0; i < mask.length; i++) data[i * 4 + 3] = mask[i];
+    this.maskCtx.putImageData(this.maskImage, 0, 0);
+    const ctx = this.outCtx;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.drawImage(this.sources[index], 0, 0);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(this.maskCanvas, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    return this.out;
+  }
+
+  /** Saves every mask, so undo() can bring them back. Call it before Keep or Remove. */
+  snapshot(): void {
+    this.undoStack.push(this.masks.map((m) => m.slice()));
+    if (this.undoStack.length > MASK_UNDO_LIMIT) this.undoStack.shift();
+  }
+
+  undo(): boolean {
+    const previous = this.undoStack.pop();
+    if (!previous) return false;
+    this.masks = previous;
+    this.centers = this.findCenters();
+    return true;
+  }
+
+  /** Applies Keep or Remove with one mask per frame. Frames with no mask stay as they are. */
+  applyObjects(objects: Array<Uint8Array | null>, mode: 'keep' | 'remove'): void {
+    objects.forEach((object, i) => {
+      if (object) applyObject(this.masks[i], object, mode);
+    });
+    this.centers = this.findCenters();
   }
 
   dispose(): void {
-    for (const f of this.frames) f.close();
-    this.frames = [];
+    for (const b of this.sources) b.close();
+    this.sources = [];
+    this.masks = [];
+    this.undoStack = [];
+  }
+
+  private findCenters(): Point[] {
+    const centers = this.masks.map((m) => maskCenter(m, this.width, this.height));
+    return fillGaps(centers, { x: this.width / 2, y: this.height / 2 });
   }
 }
 

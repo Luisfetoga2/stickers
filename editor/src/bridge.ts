@@ -72,6 +72,8 @@ interface BackgroundResult {
 interface ShellEvents extends AppEvents {
   onBackgroundResult(result: BackgroundResult): void;
   onBackgroundProgress(progress: { id: string; message: string }): void;
+  onModelResult(result: { id: string; ok: boolean; url?: string; message?: string }): void;
+  onModelProgress(progress: { id: string; message: string }): void;
 }
 
 /** Methods the Android shell exposes with addJavascriptInterface. Only strings and booleans cross over. */
@@ -86,6 +88,7 @@ interface NativeBridge {
   appVersion(): string;
   openUpdate(): void;
   checkForUpdate(): void;
+  prepareSegmenterModel(id: string): void;
   addSticker(base64: string, animated: boolean): void;
   removeBackground(id: string, jpegBase64: string): void;
 }
@@ -122,6 +125,8 @@ export interface Bridge {
   openUpdate(): void;
   /** Asks GitHub now. The answer arrives through onUpdateCheck. Returns false when it cannot ask here. */
   checkForUpdate(): boolean;
+  /** The address of the Magic Touch model. The app downloads it the first time, which can take a while. */
+  segmenterModel(onProgress: (message: string) => void): Promise<string>;
 }
 
 function toLibrary(native: NativeLibrary): StickerLibrary {
@@ -145,6 +150,7 @@ interface Pending {
 
 function nativeBridge(native: NativeBridge): Bridge {
   const pending = new Map<string, Pending>();
+  const models = new Map<string, { resolve(url: string): void; reject(err: Error): void; onProgress(m: string): void }>();
   let nextId = 1;
 
   return {
@@ -169,6 +175,16 @@ function nativeBridge(native: NativeBridge): Bridge {
         },
         onBackgroundProgress({ id, message }) {
           pending.get(id)?.onProgress(message);
+        },
+        onModelResult({ id, ok, url, message }) {
+          const m = models.get(id);
+          if (!m) return;
+          models.delete(id);
+          if (ok && url) m.resolve(url);
+          else m.reject(new Error(message ?? 'Could not get the Magic Touch model.'));
+        },
+        onModelProgress({ id, message }) {
+          models.get(id)?.onProgress(message);
         },
       };
       native.ready();
@@ -207,6 +223,13 @@ function nativeBridge(native: NativeBridge): Bridge {
       native.checkForUpdate();
       return true;
     },
+    segmenterModel(onProgress) {
+      const id = String(nextId++);
+      return new Promise((resolve, reject) => {
+        models.set(id, { resolve, reject, onProgress });
+        native.prepareSegmenterModel(id);
+      });
+    },
     async removeBackground(jpeg, onProgress) {
       const id = String(nextId++);
       const base64 = await blobToBase64(jpeg);
@@ -233,6 +256,8 @@ function browserBridge(): Bridge {
         ...e,
         onBackgroundResult() {},
         onBackgroundProgress() {},
+        onModelResult() {},
+        onModelProgress() {},
       };
     },
     pickFile() {
@@ -271,6 +296,10 @@ function browserBridge(): Bridge {
     openUpdate() {},
     checkForUpdate() {
       return false;
+    },
+    async segmenterModel() {
+      // In a desktop browser, `npm run dev-model` puts the model here. The app downloads it on the phone instead.
+      return '/dev-models/interactive_segmentation.task';
     },
     async removeBackground(jpeg, onProgress) {
       // A fake cutout for testing: removes the frame's border color, like a green screen. The real one runs in the app.

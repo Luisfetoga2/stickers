@@ -476,3 +476,7 @@ input[type='range']:disabled {
   font-weight: 500;
   padding: 6px 10px;
 }
+
+.segmented.tools-5 button {
+  font-size: 0.85rem;
+}

@@ -21,6 +21,8 @@ import { MoveControls } from './MoveControls';
 import { SliderField } from './SliderField';
 import { Stage, type Tool } from './Stage';
 import { followOffsets } from './follow';
+import { getSegmenter, objectAt } from './segmenter';
+import { trackObject } from './tapTrack';
 import { LOOP_SCAN_FPS, LOOP_SEARCH_MARGIN, MIN_LOOP_SECONDS, THUMB_SIDE, describeLoop, findLoop, toThumb } from './loop';
 import { centered, sourceDeltaToSticker, toSource, type Point, type Transform } from './transform';
 import { kb } from './encode';
@@ -38,11 +40,34 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
   { id: 'restore', label: 'Restore' },
 ];
 
+/** After an AI cutout, Keep and Remove come first: they fix whole objects in every frame. */
+const AI_TOOLS: Array<{ id: Tool; label: string }> = [
+  { id: 'move', label: 'Move' },
+  { id: 'keep', label: 'Keep' },
+  { id: 'remove', label: 'Remove' },
+  { id: 'erase', label: 'Erase' },
+  { id: 'restore', label: 'Restore' },
+];
+
+/** Scribble points closer than this, in work pixels, add nothing. */
+const SCRIBBLE_STEP = 4;
+
 function nearestFps(fps: number): number {
   return FPS_CHOICES.reduce((best, f) => (Math.abs(f - fps) < Math.abs(best - fps) ? f : best));
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** Scales a mask to another size, by nearest pixel. Magic Touch answers at the frame's size, so this rarely runs. */
+function fitMask(data: Uint8Array, w: number, h: number, width: number, height: number): Uint8Array {
+  if (w === width && h === height) return data;
+  const out = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const sy = Math.min(h - 1, Math.floor((y * h) / height));
+    for (let x = 0; x < width; x++) out[y * width + x] = data[sy * w + Math.min(w - 1, Math.floor((x * w) / width))];
+  }
+  return out;
+}
 
 /** The sharpness levels from lowest to highest, for the slider. */
 const LEVELS_UP = [...QUALITIES].reverse();
@@ -369,6 +394,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     setCutout(null);
     setTool('move');
     setFollow(false);
+    history.current = [];
     work.keep.reset();
     setContentVersion((v) => v + 1);
     setStatus(null);
@@ -426,15 +452,26 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
     setStatus({ kind: 'ok', text: `Screen color set to ${toHex([r, g, b])}.` });
   };
 
+  /** The Keep or Remove scribble in progress, in work pixels. */
+  const scribble = useRef<Point[]>([]);
+  /** One undo list for brush strokes and Keep or Remove, newest last. */
+  const history = useRef<Array<'brush' | 'object'>>([]);
+
   const onBrushStart = (p: Point) => {
     if (matte === 'none') return;
     if (tool === 'pick') {
       pickColor(p);
       return;
     }
+    if (tool === 'keep' || tool === 'remove') {
+      setPlaying(false);
+      scribble.current = [toWork(p)];
+      return;
+    }
     if (tool !== 'erase' && tool !== 'restore') return;
     setPlaying(false);
     work.keep.snapshot();
+    history.current.push('brush');
     setUndoVersion((v) => v + 1);
     setContentVersion((v) => v + 1);
     const f = toWork(p);
@@ -443,13 +480,91 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
   };
 
   const onBrushMove = (from: Point, to: Point) => {
+    if (tool === 'keep' || tool === 'remove') {
+      const p = toWork(to);
+      const last = scribble.current[scribble.current.length - 1];
+      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= SCRIBBLE_STEP) scribble.current.push(p);
+      return;
+    }
     if (matte === 'none' || (tool !== 'erase' && tool !== 'restore')) return;
     work.keep.stroke(toWork(from), toWork(to), workRadius(), tool);
     repaint();
   };
 
+  const onBrushEnd = (completed: boolean) => {
+    const points = scribble.current;
+    scribble.current = [];
+    if (completed && points.length > 0 && (tool === 'keep' || tool === 'remove')) void markObject(points, tool);
+  };
+
+  /**
+   * Keep or Remove: Magic Touch finds the object under the scribble in the frame on screen,
+   * then follows it through the other frames.
+   */
+  const markObject = async (points: Point[], mode: 'keep' | 'remove') => {
+    if (!cutout) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setWorking('cutout');
+    const verb = mode === 'keep' ? 'Keep' : 'Remove';
+    try {
+      const url = await bridge.segmenterModel((text) => setStatus({ kind: 'info', text }));
+      setStatus({ kind: 'info', text: 'Starting Magic Touch…' });
+      const segmenter = await getSegmenter(url);
+      const { width, height, count } = cutout;
+      const began = performance.now();
+      const result = await trackObject(
+        count,
+        cutout.indexAt(shownTime),
+        points,
+        width,
+        height,
+        async (i, framePoints) => {
+          // Let the screen show progress and take a Cancel tap between frames.
+          await new Promise((r) => setTimeout(r, 0));
+          const mask = objectAt(
+            segmenter,
+            cutout.source(i),
+            framePoints.map((p) => ({ x: p.x / width, y: p.y / height })),
+          );
+          return fitMask(mask.data, mask.width, mask.height, width, height);
+        },
+        (done) => {
+          const perFrame = (performance.now() - began) / 1000 / done;
+          setStatus({
+            kind: 'info',
+            text: `${verb}: frame ${done} of ${count}, ${perFrame.toFixed(2)} s per frame, about ${Math.ceil((count - done) * perFrame)} s left.`,
+          });
+        },
+        controller.signal,
+      );
+      cutout.snapshot();
+      history.current.push('object');
+      cutout.applyObjects(result.masks, mode);
+      setUndoVersion((v) => v + 1);
+      setContentVersion((v) => v + 1);
+      repaint();
+      const missed = count - result.found;
+      setStatus({
+        kind: 'ok',
+        text:
+          `${mode === 'keep' ? 'Kept' : 'Removed'} it in ${result.found} of ${count} frames.` +
+          (missed
+            ? ' In the other frames it left the picture or changed too much. Go to one of them and mark it again.'
+            : ''),
+      });
+    } catch (err) {
+      setStatus(controller.signal.aborted ? { kind: 'info', text: 'Cancelled.' } : { kind: 'error', text: errorText(err) });
+    } finally {
+      abortRef.current = null;
+      setWorking(null);
+    }
+  };
+
   const undo = () => {
-    if (work.keep.undo()) {
+    const last = history.current.pop();
+    const undone = last === 'object' ? cutout?.undo() : work.keep.undo();
+    if (undone) {
       setUndoVersion((v) => v + 1);
       setContentVersion((v) => v + 1);
       repaint();
@@ -603,9 +718,10 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
         transform={displayTransform}
         onChange={onStageChange}
         tool={matte === 'none' ? 'move' : tool}
-        brushSize={tool === 'pick' ? 6 : brushSize}
+        brushSize={tool === 'pick' || tool === 'keep' || tool === 'remove' ? 8 : brushSize}
         onBrushStart={onBrushStart}
         onBrushMove={onBrushMove}
+        onBrushEnd={onBrushEnd}
       />
 
       <div className="row playbar">
@@ -616,7 +732,11 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           {shownTime.toFixed(2)} s of {clip.duration.toFixed(1)} s.{' '}
           {tool === 'pick'
             ? 'Tap the green screen in the video.'
-            : brushing
+            : tool === 'keep'
+              ? 'Tap or scribble on something to keep it in every frame.'
+              : tool === 'remove'
+                ? 'Tap or scribble on something to remove it from every frame.'
+                : brushing
               ? 'One finger paints on every frame. Two fingers move and zoom.'
               : 'Drag to move. Pinch to zoom and rotate.'}
         </p>
@@ -680,6 +800,9 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
             <button className="ghost grow" onClick={turnOffMatte} disabled={locked}>
               Bring back the background
             </button>
+            <button className="ghost" onClick={undo} disabled={history.current.length === 0 || locked}>
+              Undo
+            </button>
           </div>
           <section className="controls">
             <label className="check">
@@ -692,8 +815,8 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
 
       {matte !== 'none' && (
         <div className="row">
-          <div className="segmented grow" role="tablist">
-            {TOOLS.map((t) => (
+          <div className={`segmented grow${matte === 'ai' ? ' tools-5' : ''}`} role="tablist" style={{ gridTemplateColumns: `repeat(${matte === 'ai' ? 5 : 3}, 1fr)` }}>
+            {(matte === 'ai' ? AI_TOOLS : TOOLS).map((t) => (
               <button
                 key={t.id}
                 role="tab"
@@ -705,9 +828,11 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
               </button>
             ))}
           </div>
-          <button className="ghost" onClick={undo} disabled={!work.keep.canUndo || locked}>
-            Undo
-          </button>
+          {matte !== 'ai' && (
+            <button className="ghost" onClick={undo} disabled={history.current.length === 0 || locked}>
+              Undo
+            </button>
+          )}
         </div>
       )}
 

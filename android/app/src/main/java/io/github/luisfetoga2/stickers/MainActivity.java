@@ -72,6 +72,7 @@ public class MainActivity extends Activity {
     private File workDir;
     private BackgroundRemover remover;
     private LinkDownloader links;
+    private ModelStore models;
     /** A link status that arrived before the editor was ready: [method, JSON argument]. */
     private String[] pendingLinkEvent;
     /** The version name of a newer release on GitHub, waiting for the editor. */
@@ -104,6 +105,7 @@ public class MainActivity extends Activity {
         remover = new BackgroundRemover(this, io);
         links = new LinkDownloader(this);
         links.warmUp();
+        models = new ModelStore(this);
         UpdateChecker.check(this, BuildConfig.VERSION_CODE, build -> main.post(() -> {
             pendingUpdate = UpdateChecker.versionName(build);
             deliverShare();
@@ -140,6 +142,7 @@ public class MainActivity extends Activity {
                 .addPathHandler("/shared/", this::serveSharedFile)
                 .addPathHandler("/work/", this::serveWorkFile)
                 .addPathHandler("/stickers/", this::serveStickerFile)
+                .addPathHandler("/models/", this::serveModelFile)
                 .build();
 
         webView.setWebViewClient(new WebViewClient() {
@@ -244,6 +247,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         remover.close();
         links.shutdown();
+        models.shutdown();
         io.shutdown();
         webView.destroy();
         super.onDestroy();
@@ -636,6 +640,23 @@ public class MainActivity extends Activity {
         sendAddResult(true, ("WhatsApp is up to date." + updateNote).trim());
     }
 
+    /** Serves the downloaded Magic Touch model to the editor. */
+    private WebResourceResponse serveModelFile(String path) {
+        File file = models.file();
+        if (!ModelStore.FILE_NAME.equals(path) || !file.isFile()) {
+            return null;
+        }
+        try {
+            return new WebResourceResponse("application/octet-stream", null, new FileInputStream(file));
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private void sendModelEvent(String method, JSONObject payload) {
+        main.post(() -> callEditor(method, payload.toString()));
+    }
+
     /** Serves saved stickers to the Your stickers screen, as /stickers/PACK_ID/FILE. */
     private WebResourceResponse serveStickerFile(String path) {
         String[] parts = path.split("/");
@@ -716,6 +737,41 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String appVersion() {
             return BuildConfig.VERSION_NAME;
+        }
+
+        /** Downloads the Magic Touch model when needed, then reports its URL through onModelResult. */
+        @JavascriptInterface
+        public void prepareSegmenterModel(String id) {
+            models.ensure(new ModelStore.Listener() {
+                @Override
+                public void onProgress(String message) {
+                    try {
+                        sendModelEvent("onModelProgress", new JSONObject().put("id", id).put("message", message));
+                    } catch (JSONException ignored) {
+                        // Progress is only a nicety.
+                    }
+                }
+
+                @Override
+                public void onReady(File file) {
+                    try {
+                        sendModelEvent("onModelResult", new JSONObject().put("id", id).put("ok", true)
+                                .put("url", "https://" + HOST + "/models/" + ModelStore.FILE_NAME));
+                    } catch (JSONException e) {
+                        throw new IllegalStateException(e);
+                    }
+                }
+
+                @Override
+                public void onError(String message) {
+                    try {
+                        sendModelEvent("onModelResult", new JSONObject().put("id", id).put("ok", false)
+                                .put("message", message));
+                    } catch (JSONException e) {
+                        throw new IllegalStateException(e);
+                    }
+                }
+            });
         }
 
         /** Asks GitHub now and reports the answer through onUpdateCheck. */

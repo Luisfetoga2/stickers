@@ -19,6 +19,8 @@ const HINTS: Record<Tool, string> = {
   erase: 'One finger erases. Two fingers move and zoom.',
   restore: 'One finger paints the photo back. Two fingers move and zoom.',
   pick: '',
+  keep: '',
+  remove: '',
 };
 
 export function PhotoEditor({ cutout, busy, setStatus, onAdd }: EditorProps & { cutout: Cutout }) {

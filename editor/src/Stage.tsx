@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { SIZE, drag, draw, pinch, zoomAround, type Point, type Transform } from './transform';
 
-export type Tool = 'move' | 'erase' | 'restore' | 'pick';
+export type Tool = 'move' | 'erase' | 'restore' | 'pick' | 'keep' | 'remove';
 
 interface Props {
   image: CanvasImageSource;
@@ -16,6 +16,8 @@ interface Props {
   brushSize: number;
   onBrushStart(p: Point): void;
   onBrushMove(from: Point, to: Point): void;
+  /** The finger lifted. completed is false when a second finger turned the stroke into a move. */
+  onBrushEnd?(completed: boolean): void;
 }
 
 type Gesture =
@@ -86,6 +88,7 @@ export function Stage(props: Props) {
       props.onBrushStart(p);
     } else {
       // A second finger ends painting and starts a two-finger move.
+      if (gesture.current?.kind === 'brush') props.onBrushEnd?.(false);
       setCursor(null);
       startMove();
     }
@@ -112,6 +115,7 @@ export function Stage(props: Props) {
   const onPointerEnd = (e: React.PointerEvent<HTMLCanvasElement>) => {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size === 0) {
+      if (gesture.current?.kind === 'brush') props.onBrushEnd?.(true);
       gesture.current = null;
       setCursor(null);
     } else {
