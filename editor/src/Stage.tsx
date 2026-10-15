@@ -50,21 +50,24 @@ export function Stage(props: Props) {
     ctx.clearRect(0, 0, SIZE, SIZE);
     draw(ctx, image, width, height, transform);
     if (mark && mark.points.length > 0) {
+      // A white outline first, so a red mark shows on red and a green mark on green.
       ctx.save();
-      ctx.strokeStyle = mark.color;
-      ctx.fillStyle = mark.color;
-      ctx.lineWidth = MARK_WIDTH;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(mark.points[0].x, mark.points[0].y);
-      for (const p of mark.points.slice(1)) ctx.lineTo(p.x, p.y);
-      if (mark.points.length === 1) {
-        ctx.arc(mark.points[0].x, mark.points[0].y, MARK_WIDTH / 2, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
+      const trace = () => {
+        ctx.beginPath();
+        ctx.moveTo(mark.points[0].x, mark.points[0].y);
+        for (const p of mark.points.slice(1)) ctx.lineTo(p.x, p.y);
+        // A tap has one point, so a zero-length line with round caps draws a dot.
+        if (mark.points.length === 1) ctx.lineTo(mark.points[0].x + 0.01, mark.points[0].y);
         ctx.stroke();
-      }
+      };
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.lineWidth = MARK_WIDTH + 6;
+      trace();
+      ctx.strokeStyle = mark.color;
+      ctx.lineWidth = MARK_WIDTH;
+      trace();
       ctx.restore();
     }
     if (cursor && tool !== 'move') {

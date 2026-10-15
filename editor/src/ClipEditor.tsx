@@ -61,7 +61,7 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 const GHOST_ALPHA = 0.3;
 
 /** The mark colors: green adds, red takes away. */
-const MARK_COLORS = { keep: 'rgba(46, 204, 113, 0.75)', remove: 'rgba(231, 76, 60, 0.75)' } as const;
+const MARK_COLORS = { keep: 'rgb(46, 204, 113)', remove: 'rgb(231, 76, 60)' } as const;
 
 /** Scales a mask to another size, by nearest pixel. Magic Touch answers at the frame's size, so this rarely runs. */
 function fitMask(data: Uint8Array, w: number, h: number, width: number, height: number): Uint8Array {
