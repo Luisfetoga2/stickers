@@ -12,6 +12,8 @@ import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
 
+import com.google.mediapipe.tasks.core.Delegate;
+
 import java.util.function.Consumer;
 
 /**
@@ -23,7 +25,6 @@ public class MagicTouchService extends Service {
 
     static final int MSG_SEGMENT = 1;
     static final int MSG_PROGRESS = 2;
-    static final int MSG_PROBE = 3;
     static final int MSG_MASK = 4;
     static final int MSG_ERROR = 5;
 
@@ -62,7 +63,8 @@ public class MagicTouchService extends Service {
             send(reply, MSG_ERROR, id, b -> b.putString("message", "Could not read the frame."));
             return true;
         }
-        magicTouch.segment(frame, points, in.getString("use"), in.getBoolean("gpuBad"), in.getBoolean("cpuBad"),
+        Delegate delegate = "CPU".equals(in.getString("use")) ? Delegate.CPU : Delegate.GPU;
+        magicTouch.segment(frame, points, delegate,
                 new MagicTouch.Callback() {
                     @Override
                     public void onProgress(String message) {
@@ -70,26 +72,22 @@ public class MagicTouchService extends Service {
                     }
 
                     @Override
-                    public void onProbe(String delegate) {
-                        send(reply, MSG_PROBE, id, b -> b.putString("delegate", delegate));
-                    }
-
-                    @Override
-                    public void onMask(byte[] mask, int width, int height, long modelMs, String delegate,
-                                       String timing) {
+                    public void onMask(byte[] mask, int width, int height, long modelMs, String delegate) {
                         send(reply, MSG_MASK, id, b -> {
                             b.putByteArray("mask", mask);
                             b.putInt("width", width);
                             b.putInt("height", height);
                             b.putLong("ms", modelMs);
                             b.putString("delegate", delegate);
-                            b.putString("timing", timing);
                         });
                     }
 
                     @Override
-                    public void onError(String message) {
-                        send(reply, MSG_ERROR, id, b -> b.putString("message", message));
+                    public void onError(String message, boolean engineFailed) {
+                        send(reply, MSG_ERROR, id, b -> {
+                            b.putString("message", message);
+                            b.putBoolean("engineFailed", engineFailed);
+                        });
                     }
                 });
         return true;

@@ -772,10 +772,8 @@ public class MainActivity extends Activity {
                 }
 
                 @Override
-                public void onMask(byte[] mask, int width, int height, long modelMs, String delegate, String timing) {
-                    // The editor shows "picked the CPU, timed: GPU 3.40 s, CPU 1.20 s" after the one-time timing.
-                    String where = timing == null ? delegate : delegate + ", timed: " + timing;
-                    sendObjectResult(id, true, mask, width, height, modelMs, where, null);
+                public void onMask(byte[] mask, int width, int height, long modelMs, String delegate) {
+                    sendObjectResult(id, true, mask, width, height, modelMs, delegate, null);
                 }
 
                 @Override

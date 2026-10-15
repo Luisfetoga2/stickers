@@ -20,20 +20,20 @@ import java.util.Map;
 
 /**
  * The app's side of MagicTouchService. It starts the service on demand and stops it when idle.
- * It also remembers, in the app's own process, which delegate this phone uses and which one crashed it.
+ * It picks the delegate for each request: the GPU, or the CPU once the GPU crashed this phone.
+ * Because the app picks it before sending, a crash always belongs to the delegate in use.
  */
 final class MagicTouchClient {
 
     interface Callback {
         void onProgress(String message);
 
-        void onMask(byte[] mask, int width, int height, long modelMs, String delegate, String timing);
+        void onMask(byte[] mask, int width, int height, long modelMs, String delegate);
 
         void onError(String message);
     }
 
     private static final long IDLE_STOP_MS = 2 * 60 * 1000;
-    private static final String DELEGATE = "delegate";
     private static final String GPU_BAD = "gpuBad";
     private static final String CPU_BAD = "cpuBad";
     /** The build that wrote the marks. A new build clears them, since it can fix what crashed. */
@@ -51,8 +51,8 @@ final class MagicTouchClient {
 
     private Messenger service;
     private boolean bound;
-    /** The delegate the service is trying for the first time. If the service dies now, this one crashed. */
-    private String probing;
+    /** The delegate of the requests sent to the running service. */
+    private String inUse;
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
@@ -89,17 +89,17 @@ final class MagicTouchClient {
         pending.put(id, callback);
         if (prefs.getBoolean(GPU_BAD, false) && prefs.getBoolean(CPU_BAD, false)) {
             // Both marks leave nothing to run. Try both again rather than refuse for good.
-            prefs.edit().remove(GPU_BAD).remove(CPU_BAD).remove(DELEGATE).apply();
+            prefs.edit().remove(GPU_BAD).remove(CPU_BAD).apply();
         }
+        String use = prefs.getBoolean(GPU_BAD, false) ? "CPU" : "GPU";
         Runnable send = () -> {
             Message message = Message.obtain(null, MagicTouchService.MSG_SEGMENT);
             Bundle bundle = new Bundle();
             bundle.putString("id", id);
             bundle.putByteArray("jpeg", jpeg);
             bundle.putFloatArray("points", points);
-            bundle.putString("use", prefs.getString(DELEGATE, null));
-            bundle.putBoolean("gpuBad", prefs.getBoolean(GPU_BAD, false));
-            bundle.putBoolean("cpuBad", prefs.getBoolean(CPU_BAD, false));
+            bundle.putString("use", use);
+            inUse = use;
             message.setData(bundle);
             message.replyTo = replies;
             try {
@@ -131,9 +131,6 @@ final class MagicTouchClient {
         Bundle b = message.getData();
         String id = b.getString("id");
         switch (message.what) {
-            case MagicTouchService.MSG_PROBE:
-                probing = b.getString("delegate");
-                return true;
             case MagicTouchService.MSG_PROGRESS: {
                 Callback callback = pending.get(id);
                 if (callback != null) {
@@ -142,21 +139,23 @@ final class MagicTouchClient {
                 return true;
             }
             case MagicTouchService.MSG_MASK: {
-                probing = null;
-                String delegate = b.getString("delegate");
-                prefs.edit().putString(DELEGATE, delegate).apply();
                 Callback callback = pending.remove(id);
                 if (callback != null) {
                     callback.onMask(b.getByteArray("mask"), b.getInt("width"), b.getInt("height"), b.getLong("ms"),
-                            delegate, b.getString("timing"));
+                            b.getString("delegate"));
                 }
                 stopLaterIfIdle();
                 return true;
             }
             case MagicTouchService.MSG_ERROR: {
+                String message = b.getString("message");
+                if (b.getBoolean("engineFailed") && inUse != null) {
+                    String other = markBad(inUse);
+                    message += ". Mark the object again to use the " + other + ".";
+                }
                 Callback callback = pending.remove(id);
                 if (callback != null) {
-                    callback.onError(b.getString("message"));
+                    callback.onError(message);
                 }
                 stopLaterIfIdle();
                 return true;
@@ -171,8 +170,8 @@ final class MagicTouchClient {
      * marks that delegate as crashing this phone. Other causes, such as low memory, mark nothing.
      */
     private void serviceDied() {
-        String delegate = probing != null ? probing : prefs.getString(DELEGATE, null);
-        probing = null;
+        String delegate = inUse;
+        inUse = null;
         unbind();
         // Fail only the requests that were running, not ones that start while Android writes the record.
         List<Callback> lost = new ArrayList<>(pending.values());
@@ -183,8 +182,7 @@ final class MagicTouchClient {
             String why = exit == null ? "Android gave no reason" : exit.summary;
             String message;
             if (exit != null && exit.nativeCrash && delegate != null) {
-                prefs.edit().putBoolean("GPU".equals(delegate) ? GPU_BAD : CPU_BAD, true).remove(DELEGATE).apply();
-                String other = "GPU".equals(delegate) ? "CPU" : "GPU";
+                String other = markBad(delegate);
                 message = "Magic Touch crashed on this phone's " + delegate + " (" + why + "). From now on it uses the "
                         + other + ". Mark the object again.";
             } else {
@@ -194,6 +192,13 @@ final class MagicTouchClient {
                 callback.onError(message);
             }
         }, EXIT_RECORD_WAIT_MS);
+    }
+
+    /** Marks the delegate as failing on this phone and returns the one the next request uses. */
+    private String markBad(String delegate) {
+        boolean gpu = "GPU".equals(delegate);
+        prefs.edit().putBoolean(gpu ? GPU_BAD : CPU_BAD, true).apply();
+        return gpu ? "CPU" : "GPU";
     }
 
     private void fail(String message) {

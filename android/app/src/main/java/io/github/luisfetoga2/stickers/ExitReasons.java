@@ -86,8 +86,8 @@ final class ExitReasons {
     }
 
     /**
-     * Readable lines from the crash record. For a native crash it is a binary tombstone, so this keeps
-     * the text runs that name the cause, such as an abort message or a MediaPipe check that failed.
+     * The cause from the crash record. A native crash record is a tombstone, which Tombstone reads.
+     * For anything else, this keeps the text runs that name the cause, such as a MediaPipe check that failed.
      */
     private static String traceText(ApplicationExitInfo info) {
         try (InputStream in = info.getTraceInputStream()) {
@@ -99,6 +99,10 @@ final class ExitReasons {
             int read;
             while ((read = in.read(buffer)) != -1 && out.size() < TRACE_LIMIT) {
                 out.write(buffer, 0, read);
+            }
+            String tombstone = Tombstone.summarize(out.toByteArray());
+            if (!tombstone.isEmpty()) {
+                return tombstone.length() > 900 ? tombstone.substring(0, 900) + "…" : tombstone;
             }
             List<String> found = new ArrayList<>();
             StringBuilder run = new StringBuilder();
@@ -119,7 +123,7 @@ final class ExitReasons {
     }
 
     private static void keepIfUseful(String s, List<String> found) {
-        if (s.length() < 12 || found.size() >= 4) {
+        if (s.length() < 12 || found.size() >= 4 || s.contains("SignalCatcher") || s.contains("Signal Catcher")) {
             return;
         }
         String lower = s.toLowerCase(Locale.ROOT);

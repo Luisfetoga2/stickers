@@ -21,7 +21,6 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -29,24 +28,18 @@ import java.util.concurrent.Executors;
  * Magic Touch (MediaPipe interactive segmentation): marks on an object give that object's mask.
  * It runs natively, on a worker thread, inside MagicTouchService's own process, so a native crash
  * cannot close the app.
- * The model is int8, which some phone GPUs run slower than the CPU. So the first use times both once,
- * and the app keeps the faster one.
+ * The app picks the delegate before each request, so a crash always belongs to the delegate it asked for.
  */
 final class MagicTouch {
 
     interface Callback {
         void onProgress(String message);
 
-        /** About to try a delegate for the first time. If the process dies now, that delegate crashes here. */
-        void onProbe(String delegate);
+        /** 0 or 255 per pixel, the same size as the frame. delegate says where it ran, such as "GPU". */
+        void onMask(byte[] mask, int width, int height, long modelMs, String delegate);
 
-        /**
-         * 0 or 255 per pixel, the same size as the frame. delegate says where it ran, such as "GPU".
-         * timing is set once, after the first use timed both delegates.
-         */
-        void onMask(byte[] mask, int width, int height, long modelMs, String delegate, String timing);
-
-        void onError(String message);
+        /** engineFailed is true when the delegate itself refused to start, so the other one is worth a try. */
+        void onError(String message, boolean engineFailed);
     }
 
 
@@ -72,27 +65,33 @@ final class MagicTouch {
         this.models = models;
     }
 
-    /**
-     * points holds normalized x, y pairs. A tap needs at least 3 points, which the editor sends.
-     * use is the delegate picked earlier, or null to time both. gpuBad and cpuBad mark delegates
-     * that crashed this phone before, so they are never tried again.
-     */
-    void segment(Bitmap frame, float[] points, String use, boolean gpuBad, boolean cpuBad, Callback callback) {
+    /** points holds normalized x, y pairs. A tap needs at least 3 points, which the editor sends. */
+    void segment(Bitmap frame, float[] points, Delegate delegate, Callback callback) {
         worker.execute(() -> {
+            File file;
             try {
-                File file = models.ensureBlocking(callback::onProgress);
-                if (use == null) {
-                    timeAndPick(file, frame, points, gpuBad, cpuBad, callback);
+                file = models.ensureBlocking(callback::onProgress);
+            } catch (Throwable e) {
+                callback.onError(e.getMessage(), false);
+                return;
+            }
+            if (segmenter == null || current != delegate) {
+                callback.onProgress("Starting Magic Touch on the " + delegate.name() + "…");
+                try {
+                    closeSegmenter();
+                    segmenter = create(file, delegate);
+                    current = delegate;
+                } catch (Throwable e) {
+                    callback.onError("Magic Touch could not start on the " + delegate.name() + ": " + e.getMessage(),
+                            true);
                     return;
                 }
-                Delegate delegate = Delegate.valueOf(use);
-                if ((delegate == Delegate.GPU && gpuBad) || (delegate == Delegate.CPU && cpuBad)) {
-                    delegate = delegate == Delegate.GPU ? Delegate.CPU : Delegate.GPU;
-                }
+            }
+            try {
                 Result result = runWith(file, delegate, frame, points);
-                callback.onMask(result.mask, result.width, result.height, result.ms, delegate.name(), null);
+                callback.onMask(result.mask, result.width, result.height, result.ms, delegate.name());
             } catch (Throwable e) {
-                callback.onError("Magic Touch failed: " + e.getMessage());
+                callback.onError("Magic Touch failed: " + e.getMessage(), false);
             }
         });
     }
@@ -100,47 +99,6 @@ final class MagicTouch {
     void close() {
         worker.execute(this::closeSegmenter);
         worker.shutdown();
-    }
-
-    /**
-     * Runs the first frame on each delegate that has not crashed before, twice, and times the second run.
-     * The first run of a GPU prepares its programs, so timing it would be unfair.
-     * The GPU goes first, because it worked on the phones tried so far.
-     */
-    private void timeAndPick(File file, Bitmap frame, float[] points, boolean gpuBad, boolean cpuBad,
-                             Callback callback) throws Throwable {
-        callback.onProgress("Timing Magic Touch on this phone's CPU and GPU. This happens once…");
-        Result cpu = null;
-        Result gpu = null;
-        Throwable error = null;
-        if (!gpuBad) {
-            callback.onProbe("GPU");
-            try {
-                runWith(file, Delegate.GPU, frame, points);
-                gpu = runWith(file, Delegate.GPU, frame, points);
-            } catch (Throwable e) {
-                error = e;
-            }
-        }
-        if (!cpuBad) {
-            callback.onProbe("CPU");
-            try {
-                runWith(file, Delegate.CPU, frame, points);
-                cpu = runWith(file, Delegate.CPU, frame, points);
-            } catch (Throwable e) {
-                error = e;
-            }
-        }
-        callback.onProbe(null);
-        if (gpu == null && cpu == null) {
-            throw error != null ? error : new IllegalStateException("no delegate worked");
-        }
-        Delegate pick = gpu == null ? Delegate.CPU : cpu == null ? Delegate.GPU : gpu.ms <= cpu.ms ? Delegate.GPU : Delegate.CPU;
-        Result chosen = pick == Delegate.GPU ? gpu : cpu;
-        String timing = String.format(Locale.ROOT, "GPU %s, CPU %s",
-                gpu == null ? (gpuBad ? "crashed before" : "failed") : String.format(Locale.ROOT, "%.2f s", gpu.ms / 1000.0),
-                cpu == null ? (cpuBad ? "crashed before" : "failed") : String.format(Locale.ROOT, "%.2f s", cpu.ms / 1000.0));
-        callback.onMask(chosen.mask, chosen.width, chosen.height, chosen.ms, pick.name(), timing);
     }
 
     /** Runs one frame on one delegate, opening or switching the segmenter as needed. */

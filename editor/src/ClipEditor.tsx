@@ -549,7 +549,6 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
       const began = performance.now();
       let modelMs = 0;
       let delegate = '';
-      let timing = '';
       const frameCanvas = newCanvas(width, height);
       const frameCtx = ctx2d(frameCanvas);
       const result = await trackObject(
@@ -566,9 +565,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           const stroke = strokePoints(framePoints.map((p) => ({ x: p.x / width, y: p.y / height })));
           const result = await bridge.segmentObject(jpeg, stroke, (text) => setStatus({ kind: 'info', text }));
           modelMs += result.modelMs;
-          // The first use times the GPU and the CPU once, and says so as "CPU, timed: GPU 3.40 s, CPU 1.20 s".
-          if (result.delegate.includes('timed')) timing = ` Magic Touch picked the ${result.delegate}.`;
-          delegate = result.delegate.split(',')[0];
+          delegate = result.delegate;
           return fitMask(result.mask, result.width, result.height, width, height);
         },
         (done) => {
@@ -596,8 +593,7 @@ export function ClipEditor({ clip, busy, setStatus, onAdd }: EditorProps & { cli
           `${mode === 'keep' ? 'Kept' : 'Removed'} it in ${result.found} of ${count} frames.` +
           (missed
             ? ' In the other frames it left the picture or changed too much. Go to one of them and mark it again.'
-            : '') +
-          timing,
+            : ''),
       });
     } catch (err) {
       setStatus(controller.signal.aborted ? { kind: 'info', text: 'Cancelled.' } : { kind: 'error', text: errorText(err) });
