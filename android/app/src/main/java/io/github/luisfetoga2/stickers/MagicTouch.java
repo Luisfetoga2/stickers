@@ -16,12 +16,10 @@ import com.google.mediapipe.tasks.vision.interactivesegmenter.InteractiveSegment
 import com.google.mediapipe.tasks.vision.interactivesegmenter.Stroke;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -54,6 +52,8 @@ final class MagicTouch {
 
     private InteractiveSegmenter segmenter;
     private String delegate = "";
+    /** How MediaPipe gets the model: 0 by file path, 1 by the file's bytes. Remembered once one works. */
+    private int modelSource = -1;
     /** Set after the GPU failed once, so later starts go straight to the CPU. */
     private boolean forceCpu;
 
@@ -66,21 +66,27 @@ final class MagicTouch {
     void segment(Bitmap frame, float[] points, Callback callback) {
         main.removeCallbacks(closeWhenIdle);
         worker.execute(() -> {
+            Exception last = null;
             try {
-                run(frame, points, callback);
-            } catch (Exception first) {
-                // Some phones accept the GPU at start but fail on the first frame. Retry once on the CPU.
-                if ("GPU".equals(delegate)) {
-                    closeSegmenter();
-                    forceCpu = true;
+                for (int attempt = 0; attempt < 3; attempt++) {
                     try {
                         run(frame, points, callback);
-                    } catch (Exception second) {
-                        callback.onError("Magic Touch failed: " + second.getMessage());
+                        return;
+                    } catch (Exception e) {
+                        last = e;
+                        closeSegmenter();
+                        if (String.valueOf(e.getMessage()).contains("ExternalFile") && modelSource == 0) {
+                            // The file path loaded, but the model's parts did not get it. Pass the bytes instead.
+                            modelSource = 1;
+                        } else if ("GPU".equals(delegate) && !forceCpu) {
+                            // Some phones accept the GPU at start but fail on the first frame.
+                            forceCpu = true;
+                        } else {
+                            break;
+                        }
                     }
-                } else {
-                    callback.onError("Magic Touch failed: " + first.getMessage());
                 }
+                callback.onError("Magic Touch failed: " + (last == null ? "unknown error" : last.getMessage()));
             } finally {
                 main.postDelayed(closeWhenIdle, IDLE_CLOSE_MS);
             }
@@ -122,38 +128,49 @@ final class MagicTouch {
         }
         File file = models.ensureBlocking(callback::onProgress);
         callback.onProgress("Starting Magic Touch…");
-        ByteBuffer model = map(file);
         if (!forceCpu) {
             try {
-                segmenter = create(model, Delegate.GPU);
+                segmenter = create(file, Delegate.GPU);
                 delegate = "GPU";
                 return;
             } catch (Exception gpuFailed) {
                 forceCpu = true;
             }
         }
-        segmenter = create(model, Delegate.CPU);
+        segmenter = create(file, Delegate.CPU);
         delegate = "CPU";
     }
 
-    private InteractiveSegmenter create(ByteBuffer model, Delegate delegate) {
-        BaseOptions base = BaseOptions.builder().setModelAssetBuffer(model).setDelegate(delegate).build();
-        return InteractiveSegmenter.createFromOptions(context,
-                InteractiveSegmenterOptions.builder().setBaseOptions(base).build());
+    /**
+     * Tries the ways to hand MediaPipe the model, simplest first. A direct buffer becomes a raw memory pointer,
+     * which this model bundle drops, so it is not used.
+     */
+    private InteractiveSegmenter create(File file, Delegate delegate) throws IOException {
+        RuntimeException last = null;
+        for (int source = Math.max(0, modelSource); source <= 1; source++) {
+            BaseOptions.Builder base = BaseOptions.builder().setDelegate(delegate);
+            if (source == 0) {
+                base.setModelAssetPath(file.getAbsolutePath());
+            } else {
+                // A heap buffer, not a direct one, so MediaPipe copies the bytes, as the web version does.
+                base.setModelAssetBuffer(ByteBuffer.wrap(Files.readAllBytes(file.toPath())));
+            }
+            try {
+                InteractiveSegmenter created = InteractiveSegmenter.createFromOptions(context,
+                        InteractiveSegmenterOptions.builder().setBaseOptions(base.build()).build());
+                modelSource = source;
+                return created;
+            } catch (RuntimeException e) {
+                last = e;
+            }
+        }
+        throw last;
     }
 
     private void closeSegmenter() {
         if (segmenter != null) {
             segmenter.close();
             segmenter = null;
-        }
-    }
-
-    private static ByteBuffer map(File file) throws IOException {
-        try (FileInputStream in = new FileInputStream(file); FileChannel channel = in.getChannel()) {
-            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size());
-            buffer.load();
-            return buffer;
         }
     }
 
