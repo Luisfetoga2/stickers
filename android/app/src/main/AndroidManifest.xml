@@ -13,6 +13,7 @@
     <application
         android:allowBackup="false"
         android:extractNativeLibs="true"
+        android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Sticker Bridge"
         android:theme="@android:style/Theme.DeviceDefault.DayNight">
@@ -46,6 +47,12 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!-- Magic Touch runs in its own process, so a native crash there cannot close the app. -->
+        <service
+            android:name=".MagicTouchService"
+            android:exported="false"
+            android:process=":magic" />
 
         <!-- Only WhatsApp holds com.whatsapp.sticker.READ, so only WhatsApp can read the packs. -->
         <provider

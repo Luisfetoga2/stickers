@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
     private File workDir;
     private BackgroundRemover remover;
     private LinkDownloader links;
-    private MagicTouch magicTouch;
+    private MagicTouchClient magicTouch;
     /** A link status that arrived before the editor was ready: [method, JSON argument]. */
     private String[] pendingLinkEvent;
     /** The version name of a newer release on GitHub, waiting for the editor. */
@@ -105,7 +105,7 @@ public class MainActivity extends Activity {
         remover = new BackgroundRemover(this, io);
         links = new LinkDownloader(this);
         links.warmUp();
-        magicTouch = new MagicTouch(this, new ModelStore(this));
+        magicTouch = new MagicTouchClient(this);
         UpdateChecker.check(this, BuildConfig.VERSION_CODE, build -> main.post(() -> {
             pendingUpdate = UpdateChecker.versionName(build);
             deliverShare();
@@ -748,46 +748,41 @@ public class MainActivity extends Activity {
          */
         @JavascriptInterface
         public void segmentObject(String id, String jpegBase64, String points) {
-            io.execute(() -> {
-                Bitmap frame = null;
-                float[] xy;
-                try {
-                    byte[] jpeg = Base64.getDecoder().decode(jpegBase64);
-                    frame = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
-                    JSONArray array = new JSONArray(points);
-                    xy = new float[array.length()];
-                    for (int i = 0; i < xy.length; i++) {
-                        xy[i] = (float) array.getDouble(i);
-                    }
-                } catch (IllegalArgumentException | JSONException e) {
-                    xy = null;
+            byte[] jpeg;
+            float[] xy;
+            try {
+                jpeg = Base64.getDecoder().decode(jpegBase64);
+                JSONArray array = new JSONArray(points);
+                xy = new float[array.length()];
+                for (int i = 0; i < xy.length; i++) {
+                    xy[i] = (float) array.getDouble(i);
                 }
-                if (frame == null || xy == null) {
-                    sendObjectResult(id, false, null, 0, 0, 0, "", "Could not read the frame.");
-                    return;
+            } catch (IllegalArgumentException | JSONException e) {
+                sendObjectResult(id, false, null, 0, 0, 0, "", "Could not read the frame.");
+                return;
+            }
+            main.post(() -> magicTouch.segment(id, jpeg, xy, new MagicTouchClient.Callback() {
+                @Override
+                public void onProgress(String message) {
+                    try {
+                        callEditor("onObjectProgress", new JSONObject().put("id", id).put("message", message).toString());
+                    } catch (JSONException ignored) {
+                        // Progress is only a nicety.
+                    }
                 }
-                magicTouch.segment(frame, xy, new MagicTouch.Callback() {
-                    @Override
-                    public void onProgress(String message) {
-                        try {
-                            String json = new JSONObject().put("id", id).put("message", message).toString();
-                            main.post(() -> callEditor("onObjectProgress", json));
-                        } catch (JSONException ignored) {
-                            // Progress is only a nicety.
-                        }
-                    }
 
-                    @Override
-                    public void onMask(byte[] mask, int width, int height, long modelMs, String delegate) {
-                        sendObjectResult(id, true, mask, width, height, modelMs, delegate, null);
-                    }
+                @Override
+                public void onMask(byte[] mask, int width, int height, long modelMs, String delegate, String timing) {
+                    // The editor shows "picked the CPU, timed: GPU 3.40 s, CPU 1.20 s" after the one-time timing.
+                    String where = timing == null ? delegate : delegate + ", timed: " + timing;
+                    sendObjectResult(id, true, mask, width, height, modelMs, where, null);
+                }
 
-                    @Override
-                    public void onError(String message) {
-                        sendObjectResult(id, false, null, 0, 0, 0, "", message);
-                    }
-                });
-            });
+                @Override
+                public void onError(String message) {
+                    sendObjectResult(id, false, null, 0, 0, 0, "", message);
+                }
+            }));
         }
 
         /** Asks GitHub now and reports the answer through onUpdateCheck. */
